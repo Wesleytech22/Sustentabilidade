@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EcoRoute - Logística Reversa</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <!-- Tela de Login -->
+    <div class="container" id="loginContainer">
+        <div class="login-card">
+            <div class="logo">
+                <i class="fas fa-recycle"></i>
+                <h1>EcoRoute</h1>
+                <p>Logística Reversa Inteligente</p>
+            </div>
+            
+            <form id="loginForm">
+                <div class="input-group">
+                    <i class="fas fa-envelope"></i>
+                    <input type="email" id="email" placeholder="Email" required>
+                </div>
+                
+                <div class="input-group">
+                    <i class="fas fa-lock"></i>
+                    <input type="password" id="password" placeholder="Senha" required>
+                </div>
+                
+                <button type="submit" class="btn-login">
+                    <span>Entrar</span>
+                    <i class="fas fa-arrow-right"></i>
+                </button>
+            </form>
+            
+            <p class="register-link">
+                Não tem uma conta? <a href="#" onclick="showRegister()">Cadastre-se</a>
+            </p>
+        </div>
+    </div>
+
+    <!-- Tela de Cadastro -->
+    <div class="container" id="registerContainer" style="display: none;">
+        <div class="login-card">
+            <div class="logo">
+                <i class="fas fa-recycle"></i>
+                <h1>EcoRoute</h1>
+                <p>Crie sua conta</p>
+            </div>
+            
+            <form id="registerForm">
+                <div class="input-group">
+                    <i class="fas fa-user"></i>
+                    <input type="text" id="regName" placeholder="Nome completo" required>
+                </div>
+                
+                <div class="input-group">
+                    <i class="fas fa-envelope"></i>
+                    <input type="email" id="regEmail" placeholder="Email" required>
+                </div>
+                
+                <div class="input-group">
+                    <i class="fas fa-phone"></i>
+                    <input type="tel" id="regPhone" placeholder="Telefone">
+                </div>
+                
+                <div class="input-group">
+                    <i class="fas fa-city"></i>
+                    <input type="text" id="regCity" placeholder="Cidade">
+                </div>
+                
+                <div class="input-group">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <input type="text" id="regState" placeholder="Estado">
+                </div>
+                
+                <div class="input-group">
+                    <i class="fas fa-lock"></i>
+                    <input type="password" id="regPassword" placeholder="Senha" required>
+                </div>
+                
+                <button type="submit" class="btn-login">
+                    <span>Cadastrar</span>
+                    <i class="fas fa-user-plus"></i>
+                </button>
+            </form>
+            
+            <p class="register-link">
+                Já tem uma conta? <a href="#" onclick="showLogin()">Fazer login</a>
+            </p>
+        </div>
+    </div>
+
+    <!-- Dashboard Principal -->
+    <div class="dashboard" id="dashboardContainer" style="display: none;">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-logo">
+                <i class="fas fa-recycle"></i>
+                <h2>EcoRoute</h2>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <a href="#" class="active" onclick="showSection('dashboard')">
+                    <i class="fas fa-home"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" onclick="showSection('points')">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <span>Pontos de Coleta</span>
+                </a>
+                <a href="#" onclick="showSection('routes')">
+                    <i class="fas fa-route"></i>
+                    <span>Rotas</span>
+                </a>
+                <a href="#" onclick="showSection('collections')">
+                    <i class="fas fa-truck"></i>
+                    <span>Coletas</span>
+                </a>
+                <a href="#" onclick="showSection('impact')">
+                    <i class="fas fa-leaf"></i>
+                    <span>Impacto Ambiental</span>
+                </a>
+            </nav>
+            
+            <div class="sidebar-user">
+                <div class="user-info">
+                    <i class="fas fa-user-circle"></i>
+                    <div>
+                        <p id="userName">Carregando...</p>
+                        <small id="userRole">Cooperativa</small>
+                    </div>
+                </div>
+                <button class="btn-logout" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Conteúdo Principal -->
+        <div class="main-content">
+            <!-- Header -->
+            <div class="main-header">
+                <h1 id="pageTitle">Dashboard</h1>
+                <div class="header-actions">
+                    <span id="currentDate"></span>
+                </div>
+            </div>
+
+            <!-- Seções -->
+            
+            <!-- Dashboard Section -->
+            <div id="dashboardSection" class="content-section">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <i class="fas fa-map-marker-alt stat-icon"></i>
+                        <div class="stat-info">
+                            <h3>Pontos de Coleta</h3>
+                            <p id="statPoints">0</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <i class="fas fa-truck stat-icon"></i>
+                        <div class="stat-info">
+                            <h3>Rotas Ativas</h3>
+                            <p id="statRoutes">0</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <i class="fas fa-weight-hanging stat-icon"></i>
+                        <div class="stat-info">
+                            <h3>Resíduos Coletados</h3>
+                            <p id="statWaste">0 kg</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <i class="fas fa-leaf stat-icon"></i>
+                        <div class="stat-info">
+                            <h3>CO₂ Economizado</h3>
+                            <p id="statCarbon">0 kg</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <h3>Coletas por Tipo</h3>
+                        <canvas id="wasteChart"></canvas>
+                    </div>
+                    
+                    <div class="chart-card">
+                        <h3>Impacto Ambiental</h3>
+                        <canvas id="impactChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pontos de Coleta Section -->
+            <div id="pointsSection" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <h2>Pontos de Coleta</h2>
+                    <button class="btn-primary" onclick="showAddPointModal()">
+                        <i class="fas fa-plus"></i> Novo Ponto
+                    </button>
+                </div>
+                
+                <div class="filters">
+                    <input type="text" id="pointSearch" placeholder="Buscar pontos..." onkeyup="filterPoints()">
+                    <select id="pointFilter" onchange="filterPoints()">
+                        <option value="">Todos os tipos</option>
+                        <option value="plastico">Plástico</option>
+                        <option value="papel">Papel</option>
+                        <option value="vidro">Vidro</option>
+                        <option value="metal">Metal</option>
+                    </select>
+                </div>
+                
+                <div class="points-grid" id="pointsGrid">
+                    <!-- Pontos serão carregados aqui -->
+                </div>
+            </div>
+
+            <!-- Rotas Section -->
+            <div id="routesSection" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <h2>Rotas Otimizadas</h2>
+                    <button class="btn-primary" onclick="showOptimizeRouteModal()">
+                        <i class="fas fa-route"></i> Otimizar Nova Rota
+                    </button>
+                </div>
+                
+                <div class="routes-list" id="routesList">
+                    <!-- Rotas serão carregadas aqui -->
+                </div>
+            </div>
+
+            <!-- Impacto Ambiental Section -->
+            <div id="impactSection" class="content-section" style="display: none;">
+                <h2>Impacto Ambiental</h2>
+                <div class="impact-grid">
+                    <div class="impact-card">
+                        <i class="fas fa-tree"></i>
+                        <h3>Árvores Preservadas</h3>
+                        <p id="treesSaved">0</p>
+                    </div>
+                    
+                    <div class="impact-card">
+                        <i class="fas fa-water"></i>
+                        <h3>Água Economizada</h3>
+                        <p id="waterSaved">0 L</p>
+                    </div>
+                    
+                    <div class="impact-card">
+                        <i class="fas fa-bolt"></i>
+                        <h3>Energia Economizada</h3>
+                        <p id="energySaved">0 kWh</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modais -->
+    
+    <!-- Modal Novo Ponto de Coleta -->
+    <div id="pointModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Novo Ponto de Coleta</h2>
+                <span class="close" onclick="closeModal('pointModal')">&times;</span>
+            </div>
+            
+            <form id="pointForm">
+                <div class="form-group">
+                    <label>Nome do Ponto</label>
+                    <input type="text" id="pointName" required>
+                </div>
+                
+                <div class="form-group">
+                    <label>Endereço</label>
+                    <input type="text" id="pointAddress" required>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Cidade</label>
+                        <input type="text" id="pointCity" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Estado</label>
+                        <input type="text" id="pointState" required>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Latitude</label>
+                        <input type="number" step="any" id="pointLat" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Longitude</label>
+                        <input type="number" step="any" id="pointLng" required>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Tipos de Resíduos</label>
+                    <div class="checkbox-group">
+                        <label><input type="checkbox" value="plastico"> Plástico</label>
+                        <label><input type="checkbox" value="papel"> Papel</label>
+                        <label><input type="checkbox" value="vidro"> Vidro</label>
+                        <label><input type="checkbox" value="metal"> Metal</label>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Capacidade (kg)</label>
+                    <input type="number" id="pointCapacity" required>
+                </div>
+                
+                <button type="submit" class="btn-primary">Salvar Ponto</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal de Carregamento -->
+    <div id="loadingModal" class="modal">
+        <div class="modal-content loading-content">
+            <div class="loader"></div>
+            <p>Carregando...</p>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
