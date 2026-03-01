@@ -8,6 +8,11 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 
+// Importar modelos e serviços
+const Message = require('./models/Message');
+const Notification = require('./models/Notification');
+const emailService = require('./services/emailService');
+
 // Carregar variáveis de ambiente
 dotenv.config();
 
@@ -84,46 +89,31 @@ const connectDB = async () => {
         const safeURI = mongoURI.replace(/:([^@]+)@/, ':****@');
         console.log(`📍 Conectando a: ${safeURI}`);
         
-        // Opções de conexão otimizadas - CORRIGIDAS
+        // Opções de conexão otimizadas
         const mongooseOptions = {
-            // Pool de conexões
             maxPoolSize: isProduction ? 50 : 10,
             minPoolSize: isProduction ? 10 : 2,
-            
-            // Timeouts - AJUSTADOS para produção
-            connectTimeoutMS: isProduction ? 30000 : 10000, // Aumentado para 30s
+            connectTimeoutMS: isProduction ? 30000 : 10000,
             socketTimeoutMS: isProduction ? 60000 : 45000,
-            serverSelectionTimeoutMS: isProduction ? 30000 : 10000, // Aumentado para 30s
-            
-            // Retry - IMPORTANTE para conexões instáveis
+            serverSelectionTimeoutMS: isProduction ? 30000 : 10000,
             retryWrites: true,
             retryReads: true,
-            
-            // Force IPv4 - RESOLVE PROBLEMA DE DNS NO RENDER
             family: 4,
-            
-            // Write concern para produção
             ...(isProduction && {
                 w: 'majority',
                 wtimeoutMS: 5000,
             }),
-            
-            // TLS/SSL - SEMPRE true para Atlas
             ...(mongoURI && mongoURI.includes('mongodb+srv') && {
                 tls: true,
-                tlsAllowInvalidCertificates: false, // NUNCA true em produção
+                tlsAllowInvalidCertificates: false,
                 tlsCAFile: undefined,
             }),
-            
-            // KeepAlive - MANTER CONEXÃO ATIVA
             keepAlive: true,
-            keepAliveInitialDelay: 300000, // 5 minutos
+            keepAliveInitialDelay: 300000,
         };
 
-        // LOG das opções (sem dados sensíveis)
         console.log(`⚙️ Opções: Pool=${mongooseOptions.maxPoolSize}, Timeout=${mongooseOptions.serverSelectionTimeoutMS}ms`);
         
-        // CONEXÃO COM OPÇÕES OTIMIZADAS
         await mongoose.connect(mongoURI, mongooseOptions);
         
         console.log('✅ MongoDB Conectado com sucesso!');
@@ -135,24 +125,14 @@ const connectDB = async () => {
         // Eventos de conexão
         mongoose.connection.on('error', (err) => {
             console.error('❌ Erro no MongoDB:', err);
-            // Não encerra, apenas loga
         });
 
         mongoose.connection.on('disconnected', () => {
             console.warn('⚠️ MongoDB desconectado');
-            // Tenta reconectar automaticamente
         });
 
         mongoose.connection.on('reconnected', () => {
             console.log('✅ MongoDB reconectado');
-        });
-
-        mongoose.connection.on('connecting', () => {
-            console.log('⏳ Conectando ao MongoDB...');
-        });
-
-        mongoose.connection.on('connected', () => {
-            console.log('✅ Conexão estabelecida');
         });
 
         return mongoose.connection;
@@ -161,54 +141,41 @@ const connectDB = async () => {
         console.error('\n❌ ERRO AO CONECTAR MONGODB:');
         console.error(`   ${error.message}\n`);
         
-        // Diagnóstico detalhado - MELHORADO
         console.log('🔍 DIAGNÓSTICO:');
         
         if (error.message.includes('bad auth') || error.message.includes('Authentication failed')) {
             console.log('   ⚠️  Erro de autenticação:');
             console.log('      • Verifique usuário e senha no .env');
             console.log('      • Confirme se o usuário tem permissão no banco correto');
-            console.log('      • No Atlas, vá em "Database Access" e verifique as permissões');
         }
         else if (error.message.includes('getaddrinfo ENOTFOUND')) {
             console.log('   ⚠️  Host não encontrado:');
             console.log('      • Verifique se o nome do cluster está correto');
-            console.log('      • Formato esperado: cluster.abcde.mongodb.net');
-            console.log('      • Sua string: ' + process.env.MONGODB_URI?.split('@')[1]);
         }
         else if (error.message.includes('timed out') || error.message.includes('timeout')) {
             console.log('   ⚠️  Timeout de conexão:');
-            console.log('      • No Atlas, adicione 0.0.0.0/0 à whitelist (IPs)');
-            console.log('      • Verifique firewall/proxy');
-            console.log('      • Confirme se o cluster está ativo (verde)');
+            console.log('      • No Atlas, adicione 0.0.0.0/0 à whitelist');
         }
         else if (error.message.includes('Could not connect to any servers')) {
             console.log('   ⚠️  Não foi possível conectar ao cluster:');
             console.log('      • Verifique a whitelist de IPs no Atlas');
-            console.log('      • Certifique-se que 0.0.0.0/0 está adicionado');
-            console.log('      • O IP do Render é dinâmico, precisa liberar tudo');
         }
         else if (error.message.includes('ECONNREFUSED')) {
             console.log('   ⚠️  Conexão recusada:');
-            console.log('      • Tentando conectar ao MongoDB local (sem sucesso)');
-            console.log('      • Em produção, configure MONGODB_URI corretamente');
+            console.log('      • Tentando conectar ao MongoDB local');
         }
         
         console.log('\n💡 SOLUÇÕES:');
         console.log('   1. No MongoDB Atlas:');
         console.log('      • Acesse: https://cloud.mongodb.com');
         console.log('      • Vá em "Network Access" → "Add IP Address"');
-        console.log('      • Adicione 0.0.0.0/0 (Allow from anywhere)');
+        console.log('      • Adicione 0.0.0.0/0');
         console.log('');
         console.log('   2. No Render:');
         console.log('      • Confirme a variável MONGODB_URI');
         console.log('      • Faça novo deploy com "Clear build cache"');
-        console.log('');
-        console.log('   3. Teste local:');
-        console.log('      • node -e "require(\"mongoose\").connect(process.env.MONGODB_URI)"');
         console.log('=================================\n');
         
-        // Em produção, encerra para o Render reiniciar
         if (process.env.NODE_ENV === 'production') {
             console.error('\n❌ PRODUÇÃO: Encerrando aplicação. O Render vai reiniciar automaticamente.');
             process.exit(1);
@@ -222,7 +189,6 @@ const connectDB = async () => {
 connectDB();
 
 // ========== SCHEMAS ==========
-// Schema do Usuário
 const userSchema = new mongoose.Schema({
     email: { 
         type: String, 
@@ -236,7 +202,7 @@ const userSchema = new mongoose.Schema({
         type: String, 
         required: [true, 'Senha é obrigatória'],
         minlength: [6, 'Senha deve ter no mínimo 6 caracteres'],
-        select: false // Não retornar por padrão
+        select: false
     },
     name: { 
         type: String, 
@@ -263,23 +229,29 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
-    lastLogin: Date
+    lastLogin: Date,
+    emailVerified: { 
+        type: Boolean, 
+        default: false 
+    },
+    verificationCode: String,
+    verificationCodeExpires: Date
 }, { 
     timestamps: true,
     toJSON: {
         transform: (doc, ret) => {
             delete ret.password;
             delete ret.__v;
+            delete ret.verificationCode;
+            delete ret.verificationCodeExpires;
             return ret;
         }
     }
 });
 
-// Índices
 userSchema.index({ email: 1 });
 userSchema.index({ city: 1, state: 1 });
 
-// Schema do Ponto de Coleta
 const collectionPointSchema = new mongoose.Schema({
     name: { type: String, required: [true, 'Nome é obrigatório'] },
     address: { type: String, required: [true, 'Endereço é obrigatório'] },
@@ -329,22 +301,18 @@ const collectionPointSchema = new mongoose.Schema({
     }
 }, { 
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    toJSON: { virtuals: true }
 });
 
-// Virtual para porcentagem de ocupação
 collectionPointSchema.virtual('occupancyPercentage').get(function() {
     if (this.capacity === 0) return 0;
     return Math.round((this.currentVolume / this.capacity) * 100);
 });
 
-// Índices
 collectionPointSchema.index({ location: '2dsphere' });
 collectionPointSchema.index({ userId: 1, status: 1 });
 collectionPointSchema.index({ city: 1, state: 1 });
 
-// Schema da Rota
 const routeSchema = new mongoose.Schema({
     name: { type: String, required: true },
     description: String,
@@ -370,11 +338,9 @@ const routeSchema = new mongoose.Schema({
     completedAt: Date
 }, { timestamps: true });
 
-// Índices
 routeSchema.index({ userId: 1, date: -1 });
 routeSchema.index({ status: 1 });
 
-// Schema da Coleta
 const collectionSchema = new mongoose.Schema({
     collectionPointId: { 
         type: mongoose.Schema.Types.ObjectId, 
@@ -393,7 +359,6 @@ const collectionSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-// Índices
 collectionSchema.index({ collectionPointId: 1, date: -1 });
 
 // Criar modelos
@@ -415,7 +380,6 @@ const authenticateToken = async (req, res, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         
-        // Buscar usuário para garantir que ainda existe e está ativo
         const user = await User.findById(decoded.id).select('-password');
         
         if (!user) {
@@ -444,7 +408,6 @@ const authenticateToken = async (req, res, next) => {
     }
 };
 
-// Middleware de autorização por role
 const authorize = (...roles) => {
     return (req, res, next) => {
         if (!req.userRole) {
@@ -459,13 +422,16 @@ const authorize = (...roles) => {
     };
 };
 
+// ========== FUNÇÕES AUXILIARES ==========
+const generateVerificationCode = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+};
+
 // ========== ROTAS DE AUTENTICAÇÃO ==========
-// ROTA DE REGISTRO - POST /api/auth/register
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, phone, city, state } = req.body;
 
-        // Validações
         if (!email || !password || !name) {
             return res.status(400).json({ 
                 error: 'Email, senha e nome são obrigatórios' 
@@ -478,17 +444,17 @@ app.post('/api/auth/register', async (req, res) => {
             });
         }
 
-        // Verificar se usuário já existe
         const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {
             return res.status(400).json({ error: 'Email já cadastrado' });
         }
 
-        // Hash da senha
         const salt = await bcrypt.genSalt(12);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Criar usuário
+        // Gerar código de verificação
+        const verificationCode = generateVerificationCode();
+
         const user = new User({
             email: email.toLowerCase(),
             password: hashedPassword,
@@ -496,26 +462,40 @@ app.post('/api/auth/register', async (req, res) => {
             phone,
             city,
             state: state?.toUpperCase(),
-            role: 'COOPERATIVE'
+            role: 'COOPERATIVE',
+            verificationCode,
+            verificationCodeExpires: new Date(Date.now() + 10 * 60 * 1000) // 10 minutos
         });
 
         await user.save();
 
-        // Gerar token
+        // ENVIAR EMAIL DE BOAS-VINDAS
+        emailService.sendWelcomeEmail(user.email, user.name)
+            .then(result => {
+                if (result.success) {
+                    console.log(`✅ Email de boas-vindas enviado para ${user.email}`);
+                } else {
+                    console.error(`❌ Falha ao enviar email para ${user.email}:`, result.error);
+                }
+            })
+            .catch(err => console.error('❌ Erro no serviço de email:', err));
+
+        // CRIAR NOTIFICAÇÃO DE BOAS-VINDAS
+        await Notification.createWelcomeNotification(user._id);
+
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Atualizar último login
         user.lastLogin = new Date();
         await user.save();
 
         res.status(201).json({ 
             user,
             token,
-            message: 'Usuário criado com sucesso'
+            message: 'Usuário criado com sucesso! Um email de boas-vindas foi enviado.'
         });
 
     } catch (error) {
@@ -531,7 +511,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// ROTA DE LOGIN - POST /api/auth/login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -540,7 +519,6 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ error: 'Email e senha são obrigatórios' });
         }
 
-        // Buscar usuário com a senha
         const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
         
         if (!user) {
@@ -551,24 +529,20 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ error: 'Usuário inativo' });
         }
 
-        // Verificar senha
         const isValid = await bcrypt.compare(password, user.password);
         if (!isValid) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
 
-        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Atualizar último login
         user.lastLogin = new Date();
         await user.save();
 
-        // Remover senha da resposta
         user.password = undefined;
 
         res.json({ 
@@ -583,7 +557,67 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// ROTA DE PERFIL - GET /api/auth/profile
+// ROTA DE VERIFICAÇÃO DE EMAIL
+app.post('/api/auth/verify-email', async (req, res) => {
+    try {
+        const { email, code } = req.body;
+        
+        const user = await User.findOne({
+            email: email.toLowerCase(),
+            verificationCode: code,
+            verificationCodeExpires: { $gt: new Date() }
+        });
+        
+        if (!user) {
+            return res.status(400).json({ 
+                error: 'Código inválido ou expirado' 
+            });
+        }
+        
+        user.emailVerified = true;
+        user.verificationCode = undefined;
+        user.verificationCodeExpires = undefined;
+        await user.save();
+        
+        res.json({ 
+            message: 'Email verificado com sucesso! Agora você pode fazer login.' 
+        });
+    } catch (error) {
+        console.error('❌ Erro na verificação:', error);
+        res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+});
+
+// REENVIAR CÓDIGO DE VERIFICAÇÃO
+app.post('/api/auth/resend-verification', async (req, res) => {
+    try {
+        const { email } = req.body;
+        
+        const user = await User.findOne({ email: email.toLowerCase() });
+        
+        if (!user) {
+            return res.status(404).json({ error: 'Usuário não encontrado' });
+        }
+        
+        if (user.emailVerified) {
+            return res.status(400).json({ error: 'Email já verificado' });
+        }
+        
+        const verificationCode = generateVerificationCode();
+        user.verificationCode = verificationCode;
+        user.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
+        await user.save();
+        
+        // Enviar novo código por email
+        await emailService.sendVerificationCode(user.email, user.name, verificationCode);
+        
+        res.json({ message: 'Código reenviado com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao reenviar código:', error);
+        res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+});
+
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
         res.json(req.user);
@@ -593,7 +627,6 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
     }
 });
 
-// ROTA PARA ATUALIZAR PERFIL - PUT /api/auth/profile
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
         const { name, phone, city, state } = req.body;
@@ -615,7 +648,6 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE PONTOS DE COLETA ==========
-// Criar ponto de coleta
 app.post('/api/points', authenticateToken, async (req, res) => {
     try {
         const pointData = {
@@ -623,14 +655,12 @@ app.post('/api/points', authenticateToken, async (req, res) => {
             userId: req.userId
         };
 
-        // Validações
         if (!pointData.name || !pointData.address || !pointData.city || !pointData.state || !pointData.capacity) {
             return res.status(400).json({ 
                 error: 'Campos obrigatórios: name, address, city, state, capacity' 
             });
         }
 
-        // Converter tipos
         if (pointData.capacity) pointData.capacity = Number(pointData.capacity);
         if (pointData.latitude) pointData.latitude = Number(pointData.latitude);
         if (pointData.longitude) pointData.longitude = Number(pointData.longitude);
@@ -655,12 +685,10 @@ app.post('/api/points', authenticateToken, async (req, res) => {
     }
 });
 
-// Listar pontos de coleta do usuário
 app.get('/api/points', authenticateToken, async (req, res) => {
     try {
         const { status, city, wasteType } = req.query;
         
-        // Construir filtro
         const filter = { userId: req.userId };
         
         if (status) filter.status = status;
@@ -675,85 +703,155 @@ app.get('/api/points', authenticateToken, async (req, res) => {
     }
 });
 
-// Buscar ponto por ID
-app.get('/api/points/:id', authenticateToken, async (req, res) => {
+// ========== ROTAS DE MENSAGENS ==========
+app.post('/api/messages', authenticateToken, async (req, res) => {
     try {
-        const point = await CollectionPoint.findOne({ 
-            _id: req.params.id, 
-            userId: req.userId 
+        const { content, room, recipient } = req.body;
+        
+        const message = new Message({
+            content,
+            room: room || 'geral',
+            sender: req.userId,
+            senderName: req.user.name,
+            recipient
         });
         
-        if (!point) {
-            return res.status(404).json({ error: 'Ponto não encontrado' });
+        await message.save();
+        
+        // Notificar destinatário se for mensagem privada
+        if (recipient) {
+            await Notification.createMessageNotification(
+                recipient,
+                req.user.name,
+                content
+            );
         }
         
-        res.json(point);
+        res.status(201).json({ 
+            message: 'Mensagem enviada com sucesso',
+            data: message
+        });
     } catch (error) {
-        console.error('❌ Erro ao buscar ponto:', error);
-        
-        if (error.kind === 'ObjectId') {
-            return res.status(400).json({ error: 'ID inválido' });
-        }
-        
-        res.status(500).json({ error: 'Erro ao buscar ponto de coleta' });
+        console.error('❌ Erro ao enviar mensagem:', error);
+        res.status(500).json({ error: 'Erro ao enviar mensagem' });
     }
 });
 
-// Atualizar ponto
-app.put('/api/points/:id', authenticateToken, async (req, res) => {
+app.get('/api/messages/:room', authenticateToken, async (req, res) => {
     try {
-        const point = await CollectionPoint.findOneAndUpdate(
-            { _id: req.params.id, userId: req.userId },
-            req.body,
-            { new: true, runValidators: true }
+        const { room } = req.params;
+        const { limit = 50, before } = req.query;
+        
+        const messages = await Message.getRoomHistory(room, parseInt(limit), before);
+        
+        res.json(messages);
+    } catch (error) {
+        console.error('❌ Erro ao buscar mensagens:', error);
+        res.status(500).json({ error: 'Erro ao buscar mensagens' });
+    }
+});
+
+app.patch('/api/messages/:id/read', authenticateToken, async (req, res) => {
+    try {
+        const message = await Message.findById(req.params.id);
+        
+        if (!message) {
+            return res.status(404).json({ error: 'Mensagem não encontrada' });
+        }
+        
+        await message.markAsRead();
+        
+        res.json({ message: 'Mensagem marcada como lida' });
+    } catch (error) {
+        console.error('❌ Erro ao marcar mensagem:', error);
+        res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+});
+
+// ========== ROTAS DE NOTIFICAÇÕES ==========
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+    try {
+        const { read, limit = 50 } = req.query;
+        
+        const query = { user: req.userId };
+        
+        if (read !== undefined) {
+            query.read = read === 'true';
+        }
+        
+        const notifications = await Notification.find(query)
+            .sort({ createdAt: -1 })
+            .limit(parseInt(limit));
+        
+        const unreadCount = await Notification.countDocuments({
+            user: req.userId,
+            read: false
+        });
+        
+        res.json({
+            notifications,
+            unreadCount,
+            total: notifications.length
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar notificações:', error);
+        res.status(500).json({ error: 'Erro ao buscar notificações' });
+    }
+});
+
+app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
+    try {
+        const notification = await Notification.findOne({
+            _id: req.params.id,
+            user: req.userId
+        });
+        
+        if (!notification) {
+            return res.status(404).json({ error: 'Notificação não encontrada' });
+        }
+        
+        await notification.markAsRead();
+        
+        res.json({ message: 'Notificação marcada como lida' });
+    } catch (error) {
+        console.error('❌ Erro ao marcar notificação:', error);
+        res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+});
+
+app.patch('/api/notifications/read-all', authenticateToken, async (req, res) => {
+    try {
+        await Notification.updateMany(
+            { user: req.userId, read: false },
+            { read: true, readAt: new Date() }
         );
         
-        if (!point) {
-            return res.status(404).json({ error: 'Ponto não encontrado' });
-        }
-        
-        res.json({ point, message: 'Ponto atualizado com sucesso' });
+        res.json({ message: 'Todas as notificações foram marcadas como lidas' });
     } catch (error) {
-        console.error('❌ Erro ao atualizar ponto:', error);
-        
-        if (error.name === 'ValidationError') {
-            return res.status(400).json({ error: error.message });
-        }
-        
-        res.status(500).json({ error: 'Erro ao atualizar ponto de coleta' });
+        console.error('❌ Erro ao marcar todas notificações:', error);
+        res.status(500).json({ error: 'Erro interno do servidor' });
     }
 });
 
-// Deletar ponto
-app.delete('/api/points/:id', authenticateToken, async (req, res) => {
+app.delete('/api/notifications/:id', authenticateToken, async (req, res) => {
     try {
-        // Verificar se há coletas associadas
-        const hasCollections = await Collection.exists({ collectionPointId: req.params.id });
-        
-        if (hasCollections) {
-            return res.status(400).json({ 
-                error: 'Não é possível deletar ponto com coletas registradas' 
-            });
-        }
-
-        const point = await CollectionPoint.findOneAndDelete({ 
-            _id: req.params.id, 
-            userId: req.userId 
+        const notification = await Notification.findOneAndDelete({
+            _id: req.params.id,
+            user: req.userId
         });
         
-        if (!point) {
-            return res.status(404).json({ error: 'Ponto não encontrado' });
+        if (!notification) {
+            return res.status(404).json({ error: 'Notificação não encontrada' });
         }
         
-        res.json({ message: 'Ponto deletado com sucesso' });
+        res.json({ message: 'Notificação removida com sucesso' });
     } catch (error) {
-        console.error('❌ Erro ao deletar ponto:', error);
-        res.status(500).json({ error: 'Erro ao deletar ponto de coleta' });
+        console.error('❌ Erro ao remover notificação:', error);
+        res.status(500).json({ error: 'Erro interno do servidor' });
     }
 });
 
 // ========== ROTAS DE ROTAS ==========
-// Criar rota
 app.post('/api/routes', authenticateToken, async (req, res) => {
     try {
         const routeData = {
@@ -763,6 +861,9 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
 
         const route = new Route(routeData);
         await route.save();
+        
+        // Criar notificação
+        await Notification.createRouteNotification(req.userId, route.name);
 
         res.status(201).json({ 
             route, 
@@ -774,7 +875,6 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
     }
 });
 
-// Listar rotas do usuário
 app.get('/api/routes', authenticateToken, async (req, res) => {
     try {
         const { status, startDate, endDate } = req.query;
@@ -799,51 +899,7 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
     }
 });
 
-// Iniciar rota
-app.patch('/api/routes/:id/start', authenticateToken, async (req, res) => {
-    try {
-        const route = await Route.findOneAndUpdate(
-            { _id: req.params.id, userId: req.userId, status: 'PLANNED' },
-            { status: 'IN_PROGRESS' },
-            { new: true }
-        );
-        
-        if (!route) {
-            return res.status(404).json({ error: 'Rota não encontrada ou já iniciada' });
-        }
-        
-        res.json({ route, message: 'Rota iniciada com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao iniciar rota:', error);
-        res.status(500).json({ error: 'Erro ao iniciar rota' });
-    }
-});
-
-// Completar rota
-app.patch('/api/routes/:id/complete', authenticateToken, async (req, res) => {
-    try {
-        const route = await Route.findOneAndUpdate(
-            { _id: req.params.id, userId: req.userId, status: 'IN_PROGRESS' },
-            { 
-                status: 'COMPLETED',
-                completedAt: new Date()
-            },
-            { new: true }
-        );
-        
-        if (!route) {
-            return res.status(404).json({ error: 'Rota não encontrada ou não iniciada' });
-        }
-        
-        res.json({ route, message: 'Rota completada com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao completar rota:', error);
-        res.status(500).json({ error: 'Erro ao completar rota' });
-    }
-});
-
 // ========== ROTAS DE COLETAS ==========
-// Registrar coleta
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
         const collectionData = {
@@ -851,7 +907,6 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
             userId: req.userId
         };
 
-        // Verificar se ponto de coleta existe e pertence ao usuário
         const point = await CollectionPoint.findOne({
             _id: collectionData.collectionPointId,
             userId: req.userId
@@ -864,11 +919,16 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
         const collection = new Collection(collectionData);
         await collection.save();
 
-        // Atualizar volume atual do ponto de coleta
         point.currentVolume += collectionData.wasteVolume;
         await point.save();
+        
+        // Criar notificação
+        await Notification.createCollectionNotification(
+            req.userId,
+            point.name,
+            collectionData.wasteVolume
+        );
 
-        // Atualizar rota se fornecida
         if (collectionData.routeId) {
             await Route.updateOne(
                 { _id: collectionData.routeId, 'points.pointId': collectionData.collectionPointId },
@@ -891,45 +951,10 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
     }
 });
 
-// Listar coletas
-app.get('/api/collections', authenticateToken, async (req, res) => {
-    try {
-        const { startDate, endDate, pointId } = req.query;
-        
-        const filter = {};
-        
-        if (pointId) {
-            filter.collectionPointId = pointId;
-        }
-        
-        if (startDate || endDate) {
-            filter.date = {};
-            if (startDate) filter.date.$gte = new Date(startDate);
-            if (endDate) filter.date.$lte = new Date(endDate);
-        }
-
-        const collections = await Collection.find(filter)
-            .populate('collectionPointId')
-            .populate('routeId')
-            .sort({ date: -1 });
-            
-        // Filtrar apenas pontos do usuário
-        const filteredCollections = collections.filter(c => 
-            c.collectionPointId?.userId?.toString() === req.userId.toString()
-        );
-            
-        res.json(filteredCollections);
-    } catch (error) {
-        console.error('❌ Erro ao listar coletas:', error);
-        res.status(500).json({ error: 'Erro ao listar coletas' });
-    }
-});
-
 // ========== ROTAS DE DASHBOARD ==========
-// Estatísticas do dashboard
 app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
-        const [points, routes, collections, impact] = await Promise.all([
+        const [points, routes, collections, impact, unreadNotifications] = await Promise.all([
             CollectionPoint.countDocuments({ userId: req.userId }),
             Route.countDocuments({ userId: req.userId, status: 'COMPLETED' }),
             Collection.find()
@@ -956,14 +981,14 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
                         totalCollections: { $sum: 1 }
                     }
                 }
-            ])
+            ]),
+            Notification.countDocuments({ user: req.userId, read: false })
         ]);
 
         const totalWaste = impact[0]?.totalWaste || 0;
         const avgCollection = impact[0]?.avgCollection || 0;
         const totalCollections = impact[0]?.totalCollections || 0;
 
-        // Cálculos de impacto
         const treesSaved = Math.floor(totalWaste * 0.02);
         const waterSaved = totalWaste * 5;
         const energySaved = totalWaste * 0.35;
@@ -975,6 +1000,7 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
             totalWaste,
             avgCollection,
             totalCollections,
+            unreadNotifications,
             impact: {
                 treesSaved,
                 waterSaved: Math.floor(waterSaved),
@@ -985,82 +1011,6 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Erro ao carregar stats:', error);
         res.status(500).json({ error: 'Erro ao carregar estatísticas' });
-    }
-});
-
-// Dados para gráficos
-app.get('/api/dashboard/charts', authenticateToken, async (req, res) => {
-    try {
-        const { period = 'month' } = req.query;
-
-        // Agregação por tipo de resíduo
-        const wasteByType = await Collection.aggregate([
-            {
-                $lookup: {
-                    from: 'collectionpoints',
-                    localField: 'collectionPointId',
-                    foreignField: '_id',
-                    as: 'point'
-                }
-            },
-            { $unwind: '$point' },
-            { $match: { 'point.userId': req.user._id } },
-            {
-                $group: {
-                    _id: '$wasteType',
-                    volume: { $sum: '$wasteVolume' }
-                }
-            },
-            { $sort: { volume: -1 } }
-        ]);
-
-        // Agregação por período
-        const groupBy = period === 'month' 
-            ? { $month: '$date' }
-            : period === 'week'
-            ? { $week: '$date' }
-            : { $dayOfMonth: '$date' };
-
-        const impactData = await Collection.aggregate([
-            {
-                $lookup: {
-                    from: 'collectionpoints',
-                    localField: 'collectionPointId',
-                    foreignField: '_id',
-                    as: 'point'
-                }
-            },
-            { $unwind: '$point' },
-            { $match: { 'point.userId': req.user._id } },
-            {
-                $group: {
-                    _id: groupBy,
-                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } },
-                    waste: { $sum: '$wasteVolume' }
-                }
-            },
-            { $sort: { _id: 1 } }
-        ]);
-
-        // Mapear meses
-        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-        
-        const formattedImpactData = impactData.map(item => ({
-            month: period === 'month' ? monthNames[item._id - 1] : `Período ${item._id}`,
-            carbon: Math.round(item.carbon),
-            waste: item.waste
-        }));
-
-        res.json({ 
-            wasteByType: wasteByType.map(w => ({
-                type: w._id || 'Não categorizado',
-                volume: w.volume
-            })),
-            impactData: formattedImpactData 
-        });
-    } catch (error) {
-        console.error('❌ Erro ao carregar gráficos:', error);
-        res.status(500).json({ error: 'Erro ao carregar dados dos gráficos' });
     }
 });
 
@@ -1088,13 +1038,11 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
 
         const totalWaste = result[0]?.totalWaste || 0;
         
-        // Cálculos de impacto
         const treesSaved = Math.floor(totalWaste * 0.02);
         const waterSaved = totalWaste * 5;
         const energySaved = totalWaste * 0.35;
         const carbonSaved = totalWaste * 0.13;
 
-        // Adicionar histórico
         const history = await Collection.aggregate([
             {
                 $lookup: {
@@ -1134,7 +1082,6 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS PÚBLICAS ==========
-// Rota raiz
 app.get('/', (req, res) => {
     res.json({
         nome: 'EcoRoute API - Logística Reversa',
@@ -1147,7 +1094,8 @@ app.get('/', (req, res) => {
             auth: {
                 registro: 'POST /api/auth/register',
                 login: 'POST /api/auth/login',
-                perfil: 'GET /api/auth/profile (auth)'
+                perfil: 'GET /api/auth/profile (auth)',
+                verificar: 'POST /api/auth/verify-email'
             },
             pontos: {
                 listar: 'GET /api/points (auth)',
@@ -1166,6 +1114,17 @@ app.get('/', (req, res) => {
                 listar: 'GET /api/collections (auth)',
                 registrar: 'POST /api/collections (auth)'
             },
+            mensagens: {
+                enviar: 'POST /api/messages (auth)',
+                listar: 'GET /api/messages/:room (auth)',
+                marcarLida: 'PATCH /api/messages/:id/read (auth)'
+            },
+            notificacoes: {
+                listar: 'GET /api/notifications (auth)',
+                marcarLida: 'PATCH /api/notifications/:id/read (auth)',
+                marcarTodas: 'PATCH /api/notifications/read-all (auth)',
+                deletar: 'DELETE /api/notifications/:id (auth)'
+            },
             dashboard: {
                 stats: 'GET /api/dashboard/stats (auth)',
                 charts: 'GET /api/dashboard/charts (auth)'
@@ -1176,7 +1135,6 @@ app.get('/', (req, res) => {
     });
 });
 
-// Rota de saúde
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'OK',
@@ -1188,7 +1146,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Rota de documentação simples
 app.get('/api/docs', (req, res) => {
     res.json({
         titulo: 'EcoRoute API - Documentação',
@@ -1217,14 +1174,25 @@ app.get('/api/docs', (req, res) => {
                         email: 'string (obrigatório)',
                         password: 'string (obrigatório)'
                     }
+                },
+                'POST /api/auth/verify-email': {
+                    descricao: 'Verificar email com código',
+                    body: {
+                        email: 'string (obrigatório)',
+                        code: 'string (obrigatório, 6 dígitos)'
+                    }
                 }
             },
-            pontos: {
-                'GET /api/points': 'Listar pontos de coleta (filtros: status, city, wasteType)',
-                'POST /api/points': 'Criar ponto de coleta',
-                'GET /api/points/:id': 'Buscar ponto por ID',
-                'PUT /api/points/:id': 'Atualizar ponto',
-                'DELETE /api/points/:id': 'Deletar ponto'
+            notificacoes: {
+                'GET /api/notifications': 'Listar notificações do usuário',
+                'PATCH /api/notifications/:id/read': 'Marcar notificação como lida',
+                'PATCH /api/notifications/read-all': 'Marcar todas como lidas',
+                'DELETE /api/notifications/:id': 'Remover notificação'
+            },
+            mensagens: {
+                'POST /api/messages': 'Enviar mensagem',
+                'GET /api/messages/:room': 'Buscar histórico da sala',
+                'PATCH /api/messages/:id/read': 'Marcar mensagem como lida'
             }
         },
         exemplos: {
@@ -1244,7 +1212,6 @@ app.get('/api/docs', (req, res) => {
 });
 
 // ========== TRATAMENTO DE ERROS ==========
-// 404
 app.use('*', (req, res) => {
     res.status(404).json({ 
         error: 'Rota não encontrada',
@@ -1254,7 +1221,6 @@ app.use('*', (req, res) => {
     });
 });
 
-// Middleware de erro global
 app.use((err, req, res, next) => {
     console.error('❌ Erro global:', err.stack);
     

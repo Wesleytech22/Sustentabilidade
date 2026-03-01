@@ -1,12 +1,15 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 
-const Sidebar = ({ user, onLogout }) => {
+const Sidebar = ({ user, onLogout, unreadCount, isConnected }) => {
   return (
     <div className="sidebar">
       <div className="sidebar-logo">
         <i className="fas fa-recycle"></i>
         <h2>EcoRoute</h2>
+        <div className={`connection-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
+          <span className="dot"></span>
+        </div>
       </div>
 
       <nav className="sidebar-nav">
@@ -28,6 +31,27 @@ const Sidebar = ({ user, onLogout }) => {
         <NavLink to="/dashboard/impact" className={({ isActive }) => isActive ? 'active' : ''}>
           <i className="fas fa-leaf"></i>
           <span>Impacto Ambiental</span>
+        </NavLink>
+
+        {/* Divisor */}
+        <div className="nav-divider"></div>
+
+        {/* Chat */}
+        <NavLink to="/dashboard/chat" className={({ isActive }) => isActive ? 'active' : ''}>
+          <i className="fas fa-comments"></i>
+          <span>Chat</span>
+          {isConnected && (
+            <span className="status-badge online" title="Conectado">●</span>
+          )}
+        </NavLink>
+        
+        {/* Notificações */}
+        <NavLink to="/dashboard/notifications" className={({ isActive }) => isActive ? 'active' : ''}>
+          <i className="fas fa-bell"></i>
+          <span>Notificações</span>
+          {unreadCount > 0 && (
+            <span className="notification-badge">{unreadCount}</span>
+          )}
         </NavLink>
       </nav>
 

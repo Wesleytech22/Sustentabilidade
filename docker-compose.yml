@@ -22,25 +22,55 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: ecoroute-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ecoroute-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build: ./backend
     container_name: ecoroute-backend
     restart: unless-stopped
     ports:
       - "3000:3000"
+      - "3001:3001" # Porta para Socket.IO
     environment:
       - NODE_ENV=production
       - PORT=3000
-      # Usando MongoDB no container
+      - SOCKET_PORT=3001
+      # MongoDB no container
       - MONGODB_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
-      # Ou se preferir usar Atlas, comente a linha acima e descomente abaixo:
-      # - MONGODB_URI=${MONGODB_URI}
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # JWT
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+      # Email (usando variáveis do .env)
+      - EMAIL_HOST=${EMAIL_HOST}
+      - EMAIL_PORT=${EMAIL_PORT}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASS=${EMAIL_PASS}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - FRONTEND_URL=http://localhost:80
     env_file:
       - .env.docker
     depends_on:
       mongodb:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - ecoroute-network
@@ -51,16 +81,19 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3000/api
+      - REACT_APP_SOCKET_URL=http://localhost:3001
     depends_on:
       - backend
     networks:
       - ecoroute-network
-    environment:
-      - REACT_APP_API_URL=http://localhost:3000/api
 
 volumes:
   mongodb_data:
     name: ecoroute-mongodb-data
+  redis_data:
+    name: ecoroute-redis-data
 
 networks:
   ecoroute-network:
