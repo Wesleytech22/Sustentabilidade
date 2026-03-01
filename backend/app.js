@@ -57,6 +57,7 @@ const connectDB = async () => {
         console.log('=================================');
         
         // Mostrar configuração atual
+        const isProduction = process.env.NODE_ENV === 'production';
         console.log(`📋 NODE_ENV: ${process.env.NODE_ENV || 'não definido'}`);
         
         let mongoURI = process.env.MONGODB_URI;
@@ -70,30 +71,36 @@ const connectDB = async () => {
         else if (mongoURI && mongoURI.includes('mongodb+srv')) {
             console.log('🌍 Modo: MongoDB Atlas (nuvem)');
         }
-        // Fallback para local
-        else if (!mongoURI) {
+        // Fallback para local - APENAS EM DESENVOLVIMENTO
+        else if (!mongoURI && !isProduction) {
             mongoURI = 'mongodb://localhost:27017/ecoroute-dev';
             console.log('💻 Modo: MongoDB Local (desenvolvimento)');
+        }
+        else if (!mongoURI && isProduction) {
+            throw new Error('MONGODB_URI não definida nas variáveis de ambiente em produção');
         }
 
         // Mostrar URI (escondendo senha)
         const safeURI = mongoURI.replace(/:([^@]+)@/, ':****@');
         console.log(`📍 Conectando a: ${safeURI}`);
         
-        // Opções de conexão otimizadas
+        // Opções de conexão otimizadas - CORRIGIDAS
         const mongooseOptions = {
             // Pool de conexões
             maxPoolSize: isProduction ? 50 : 10,
             minPoolSize: isProduction ? 10 : 2,
             
-            // Timeouts
-            connectTimeoutMS: isProduction ? 10000 : 5000,
-            socketTimeoutMS: isProduction ? 45000 : 30000,
-            serverSelectionTimeoutMS: isProduction ? 10000 : 5000,
+            // Timeouts - AJUSTADOS para produção
+            connectTimeoutMS: isProduction ? 30000 : 10000, // Aumentado para 30s
+            socketTimeoutMS: isProduction ? 60000 : 45000,
+            serverSelectionTimeoutMS: isProduction ? 30000 : 10000, // Aumentado para 30s
             
-            // Retry
+            // Retry - IMPORTANTE para conexões instáveis
             retryWrites: true,
             retryReads: true,
+            
+            // Force IPv4 - RESOLVE PROBLEMA DE DNS NO RENDER
+            family: 4,
             
             // Write concern para produção
             ...(isProduction && {
@@ -101,13 +108,21 @@ const connectDB = async () => {
                 wtimeoutMS: 5000,
             }),
             
-            // TLS apenas para Atlas
-            ...(mongoURI.includes('mongodb+srv') && {
+            // TLS/SSL - SEMPRE true para Atlas
+            ...(mongoURI && mongoURI.includes('mongodb+srv') && {
                 tls: true,
-                tlsAllowInvalidCertificates: !isProduction,
+                tlsAllowInvalidCertificates: false, // NUNCA true em produção
+                tlsCAFile: undefined,
             }),
+            
+            // KeepAlive - MANTER CONEXÃO ATIVA
+            keepAlive: true,
+            keepAliveInitialDelay: 300000, // 5 minutos
         };
 
+        // LOG das opções (sem dados sensíveis)
+        console.log(`⚙️ Opções: Pool=${mongooseOptions.maxPoolSize}, Timeout=${mongooseOptions.serverSelectionTimeoutMS}ms`);
+        
         // CONEXÃO COM OPÇÕES OTIMIZADAS
         await mongoose.connect(mongoURI, mongooseOptions);
         
@@ -120,14 +135,24 @@ const connectDB = async () => {
         // Eventos de conexão
         mongoose.connection.on('error', (err) => {
             console.error('❌ Erro no MongoDB:', err);
+            // Não encerra, apenas loga
         });
 
         mongoose.connection.on('disconnected', () => {
             console.warn('⚠️ MongoDB desconectado');
+            // Tenta reconectar automaticamente
         });
 
         mongoose.connection.on('reconnected', () => {
             console.log('✅ MongoDB reconectado');
+        });
+
+        mongoose.connection.on('connecting', () => {
+            console.log('⏳ Conectando ao MongoDB...');
+        });
+
+        mongoose.connection.on('connected', () => {
+            console.log('✅ Conexão estabelecida');
         });
 
         return mongoose.connection;
@@ -136,34 +161,60 @@ const connectDB = async () => {
         console.error('\n❌ ERRO AO CONECTAR MONGODB:');
         console.error(`   ${error.message}\n`);
         
-        // Diagnóstico detalhado
+        // Diagnóstico detalhado - MELHORADO
         console.log('🔍 DIAGNÓSTICO:');
         
         if (error.message.includes('bad auth') || error.message.includes('Authentication failed')) {
             console.log('   ⚠️  Erro de autenticação:');
             console.log('      • Verifique usuário e senha no .env');
-            console.log('      • No Atlas, confirme se o usuário tem permissão');
-            console.log('      • Para MongoDB local, desabilite autenticação');
+            console.log('      • Confirme se o usuário tem permissão no banco correto');
+            console.log('      • No Atlas, vá em "Database Access" e verifique as permissões');
         }
         else if (error.message.includes('getaddrinfo ENOTFOUND')) {
             console.log('   ⚠️  Host não encontrado:');
-            console.log('      • Verifique se o nome do host está correto');
-            console.log('      • Se for Atlas, verifique sua string de conexão');
+            console.log('      • Verifique se o nome do cluster está correto');
+            console.log('      • Formato esperado: cluster.abcde.mongodb.net');
+            console.log('      • Sua string: ' + process.env.MONGODB_URI?.split('@')[1]);
         }
-        else if (error.message.includes('timed out')) {
+        else if (error.message.includes('timed out') || error.message.includes('timeout')) {
             console.log('   ⚠️  Timeout de conexão:');
-            console.log('      • Verifique se o MongoDB está rodando');
-            console.log('      • No Atlas, adicione seu IP à whitelist');
+            console.log('      • No Atlas, adicione 0.0.0.0/0 à whitelist (IPs)');
+            console.log('      • Verifique firewall/proxy');
+            console.log('      • Confirme se o cluster está ativo (verde)');
+        }
+        else if (error.message.includes('Could not connect to any servers')) {
+            console.log('   ⚠️  Não foi possível conectar ao cluster:');
+            console.log('      • Verifique a whitelist de IPs no Atlas');
+            console.log('      • Certifique-se que 0.0.0.0/0 está adicionado');
+            console.log('      • O IP do Render é dinâmico, precisa liberar tudo');
+        }
+        else if (error.message.includes('ECONNREFUSED')) {
+            console.log('   ⚠️  Conexão recusada:');
+            console.log('      • Tentando conectar ao MongoDB local (sem sucesso)');
+            console.log('      • Em produção, configure MONGODB_URI corretamente');
         }
         
-        // Em produção, não continuamos sem banco
-        if (isProduction) {
-            console.error('\n❌ PRODUÇÃO: Encerrando aplicação sem banco de dados');
+        console.log('\n💡 SOLUÇÕES:');
+        console.log('   1. No MongoDB Atlas:');
+        console.log('      • Acesse: https://cloud.mongodb.com');
+        console.log('      • Vá em "Network Access" → "Add IP Address"');
+        console.log('      • Adicione 0.0.0.0/0 (Allow from anywhere)');
+        console.log('');
+        console.log('   2. No Render:');
+        console.log('      • Confirme a variável MONGODB_URI');
+        console.log('      • Faça novo deploy com "Clear build cache"');
+        console.log('');
+        console.log('   3. Teste local:');
+        console.log('      • node -e "require(\"mongoose\").connect(process.env.MONGODB_URI)"');
+        console.log('=================================\n');
+        
+        // Em produção, encerra para o Render reiniciar
+        if (process.env.NODE_ENV === 'production') {
+            console.error('\n❌ PRODUÇÃO: Encerrando aplicação. O Render vai reiniciar automaticamente.');
             process.exit(1);
         } else {
             console.log('\n⚠️  Desenvolvimento: Continuando sem banco de dados...');
         }
-        console.log('=================================\n');
     }
 };
 
