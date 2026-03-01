@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
+// Carregar variáveis de ambiente
 dotenv.config();
 
 const app = express();
@@ -15,13 +16,104 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Conectar ao MongoDB
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('✅ MongoDB Conectado!'))
-    .catch(err => console.error('❌ Erro MongoDB:', err));
+// ========== CONFIGURAÇÃO DE CONEXÃO MULTI-AMBIENTE ==========
+const connectDB = async () => {
+    try {
+        console.log('\n=================================');
+        console.log('🔌 INICIANDO CONEXÃO COM MONGODB');
+        console.log('=================================');
+        
+        // Mostrar configuração atual
+        console.log(`📋 NODE_ENV: ${process.env.NODE_ENV || 'não definido'}`);
+        
+        let mongoURI = process.env.MONGODB_URI;
+        
+        // Se estiver no Docker, constrói a URI a partir das variáveis individuais
+        if (!mongoURI && process.env.MONGO_ROOT_USER) {
+            mongoURI = `mongodb://${process.env.MONGO_ROOT_USER}:${process.env.MONGO_ROOT_PASSWORD}@mongodb:27017/${process.env.MONGO_DATABASE}?authSource=admin`;
+            console.log('📦 Modo: MongoDB no Docker');
+        }
+        // Se tiver URI do Atlas
+        else if (mongoURI && mongoURI.includes('mongodb+srv')) {
+            console.log('🌍 Modo: MongoDB Atlas (nuvem)');
+        }
+        // Fallback para local
+        else if (!mongoURI) {
+            mongoURI = 'mongodb://localhost:27017/ecoroute-dev';
+            console.log('💻 Modo: MongoDB Local (desenvolvimento)');
+        }
+
+        // Mostrar URI (escondendo senha)
+        const safeURI = mongoURI.replace(/:([^@]+)@/, ':****@');
+        console.log(`📍 Conectando a: ${safeURI}`);
+        
+        // CONEXÃO SIMPLIFICADA - sem opções obsoletas
+        await mongoose.connect(mongoURI);
+        
+        console.log('✅ MongoDB Conectado com sucesso!');
+        console.log(`📊 Database: ${mongoose.connection.name}`);
+        console.log(`🌐 Host: ${mongoose.connection.host}`);
+        console.log('=================================\n');
+        
+        return mongoose.connection;
+        
+    } catch (error) {
+        console.error('\n❌ ERRO AO CONECTAR MONGODB:');
+        console.error(`   ${error.message}\n`);
+        
+        // Diagnóstico detalhado
+        console.log('🔍 DIAGNÓSTICO:');
+        
+        if (error.message.includes('bad auth') || error.message.includes('Authentication failed')) {
+            console.log('   ⚠️  Erro de autenticação:');
+            console.log('      • Verifique usuário e senha no .env');
+            console.log('      • No Atlas, confirme se o usuário tem permissão');
+            console.log('      • Para MongoDB local, desabilite autenticação');
+        }
+        else if (error.message.includes('getaddrinfo ENOTFOUND')) {
+            console.log('   ⚠️  Host não encontrado:');
+            console.log('      • Verifique se o nome do host está correto');
+            console.log('      • Se for Atlas, verifique sua string de conexão');
+            console.log('      • Se for Docker, certifique-se que o container está rodando');
+        }
+        else if (error.message.includes('timed out')) {
+            console.log('   ⚠️  Timeout de conexão:');
+            console.log('      • Verifique se o MongoDB está rodando');
+            console.log('      • No Atlas, adicione seu IP à whitelist');
+            console.log('      • Verifique firewall/proxy');
+        }
+        else if (error.message.includes('ECONNREFUSED')) {
+            console.log('   ⚠️  Conexão recusada:');
+            console.log('      • MongoDB não está rodando');
+            console.log('      • Execute: docker-compose up mongodb');
+            console.log('      • Ou: mongod');
+        }
+        
+        console.log('\n💡 SOLUÇÕES RÁPIDAS:');
+        console.log('   1. Para usar MongoDB LOCAL:');
+        console.log('      • No terminal: mongod');
+        console.log('      • Ou: docker run -d -p 27017:27017 --name mongodb mongo:6');
+        console.log('');
+        console.log('   2. Para usar MongoDB DOCKER:');
+        console.log('      • docker-compose up mongodb -d');
+        console.log('');
+        console.log('   3. Para usar MongoDB ATLAS:');
+        console.log('      • Verifique seu IP na whitelist do Atlas');
+        console.log('      • Confirme usuário/senha no .env');
+        console.log('');
+        console.log('   4. Testar conexões disponíveis:');
+        console.log('      • node testar-conexao.js');
+        console.log('=================================\n');
+        
+        // Não encerra o processo para poder testar outras rotas
+        console.log('⚠️  Continuando sem banco de dados...');
+    }
+};
+
+// Executar conexão
+connectDB();
 
 // ========== SCHEMAS ==========
-
 // Schema do Usuário
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
@@ -85,7 +177,6 @@ const Route = mongoose.model('Route', routeSchema);
 const Collection = mongoose.model('Collection', collectionSchema);
 
 // ========== MIDDLEWARE DE AUTENTICAÇÃO ==========
-
 const authenticateToken = async (req, res, next) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
@@ -105,28 +196,23 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // ========== ROTAS DE AUTENTICAÇÃO ==========
-
 // ROTA DE REGISTRO - POST /api/auth/register
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, phone, city, state } = req.body;
 
-        // Validações
         if (!email || !password || !name) {
             return res.status(400).json({ error: 'Email, senha e nome são obrigatórios' });
         }
 
-        // Verificar se usuário já existe
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ error: 'Email já cadastrado' });
         }
 
-        // Hash da senha
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Criar usuário
         const user = new User({
             email,
             password: hashedPassword,
@@ -139,14 +225,12 @@ app.post('/api/auth/register', async (req, res) => {
 
         await user.save();
 
-        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET || 'secret',
-            { expiresIn: '7d' }
+            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Retornar usuário sem senha
         const userWithoutPassword = await User.findById(user._id).select('-password');
         
         res.status(201).json({ 
@@ -166,31 +250,26 @@ app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Validações
         if (!email || !password) {
             return res.status(400).json({ error: 'Email e senha são obrigatórios' });
         }
 
-        // Buscar usuário
         const user = await User.findOne({ email });
         if (!user) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
 
-        // Verificar senha
         const isValid = await bcrypt.compare(password, user.password);
         if (!isValid) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
 
-        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET || 'secret',
-            { expiresIn: '7d' }
+            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Retornar usuário sem senha
         const userWithoutPassword = await User.findById(user._id).select('-password');
         
         res.json({ 
@@ -220,43 +299,27 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE PONTOS DE COLETA ==========
-
 // Criar ponto de coleta
-// Criar ponto de coleta - VERSÃO COM DEBUG
 app.post('/api/points', authenticateToken, async (req, res) => {
     try {
-        console.log('='.repeat(50));
-        console.log('📥 REQUISIÇÃO RECEBIDA - Criar Ponto');
-        console.log('📌 Headers:', req.headers.authorization ? 'Token presente' : 'Sem token');
-        console.log('👤 userId:', req.userId);
-        console.log('📦 Dados recebidos:', JSON.stringify(req.body, null, 2));
-        
         const pointData = {
             ...req.body,
             userId: req.userId
         };
 
-        // Validar dados obrigatórios
         if (!pointData.name || !pointData.address || !pointData.city || !pointData.state || !pointData.capacity) {
-            console.log('❌ Erro de validação: campos obrigatórios faltando');
             return res.status(400).json({ 
                 error: 'Campos obrigatórios: name, address, city, state, capacity' 
             });
         }
 
-        // Converter tipos de dados
         if (pointData.capacity) pointData.capacity = Number(pointData.capacity);
         if (pointData.latitude) pointData.latitude = Number(pointData.latitude);
         if (pointData.longitude) pointData.longitude = Number(pointData.longitude);
         if (pointData.currentVolume) pointData.currentVolume = Number(pointData.currentVolume);
 
-        console.log('📦 Dados processados:', JSON.stringify(pointData, null, 2));
-
         const point = new CollectionPoint(pointData);
         await point.save();
-
-        console.log('✅ Ponto criado com sucesso! ID:', point._id);
-        console.log('='.repeat(50));
 
         res.status(201).json({ 
             point, 
@@ -265,15 +328,9 @@ app.post('/api/points', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Erro ao criar ponto:', error);
         
-        // Erro de validação do mongoose
         if (error.name === 'ValidationError') {
             const errors = Object.values(error.errors).map(err => err.message);
             return res.status(400).json({ error: errors.join(', ') });
-        }
-        
-        // Erro de duplicata
-        if (error.code === 11000) {
-            return res.status(400).json({ error: 'Já existe um ponto com estes dados' });
         }
         
         res.status(500).json({ error: error.message || 'Erro ao criar ponto de coleta' });
@@ -350,7 +407,6 @@ app.delete('/api/points/:id', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE ROTAS ==========
-
 // Criar rota
 app.post('/api/routes', authenticateToken, async (req, res) => {
     try {
@@ -443,14 +499,12 @@ app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE COLETAS ==========
-
 // Registrar coleta
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
         const collection = new Collection(req.body);
         await collection.save();
 
-        // Atualizar volume atual do ponto de coleta
         await CollectionPoint.findByIdAndUpdate(
             req.body.collectionPointId,
             { $inc: { currentVolume: req.body.wasteVolume } }
@@ -480,7 +534,6 @@ app.get('/api/collections', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE DASHBOARD ==========
-
 // Estatísticas do dashboard
 app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
@@ -494,7 +547,7 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
             });
 
         const totalWaste = collections.reduce((sum, c) => sum + (c.wasteVolume || 0), 0);
-        const totalCarbon = routes * 65; // Cálculo simplificado
+        const totalCarbon = routes * 65;
 
         res.json({
             points,
@@ -512,7 +565,6 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
 // Dados para gráficos
 app.get('/api/dashboard/charts', authenticateToken, async (req, res) => {
     try {
-        // Dados de exemplo - você pode implementar a lógica real depois
         const wasteByType = [
             { type: 'Plástico', volume: 850 },
             { type: 'Papel', volume: 1200 },
@@ -537,7 +589,6 @@ app.get('/api/dashboard/charts', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE IMPACTO AMBIENTAL ==========
-
 app.get('/api/impact', authenticateToken, async (req, res) => {
     try {
         const collections = await Collection.find()
@@ -548,16 +599,15 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
 
         const totalWaste = collections.reduce((sum, c) => sum + (c.wasteVolume || 0), 0);
         
-        // Cálculos de impacto (simplificados)
-        const treesSaved = Math.floor(totalWaste * 0.02); // 1 árvore a cada 50kg
-        const waterSaved = totalWaste * 5; // 5L de água por kg reciclado
-        const energySaved = totalWaste * 0.35; // 0.35 kWh por kg
+        const treesSaved = Math.floor(totalWaste * 0.02);
+        const waterSaved = totalWaste * 5;
+        const energySaved = totalWaste * 0.35;
 
         res.json({
             treesSaved,
             waterSaved: Math.floor(waterSaved),
             energySaved: Math.floor(energySaved),
-            carbonSaved: Math.floor(totalWaste * 0.13) // 0.13 kg CO2 por kg
+            carbonSaved: Math.floor(totalWaste * 0.13)
         });
     } catch (error) {
         console.error('❌ Erro ao calcular impacto:', error);
@@ -566,14 +616,14 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS PÚBLICAS ==========
-
 // Rota raiz
 app.get('/', (req, res) => {
     res.json({
         nome: 'EcoRoute API - Logística Reversa',
         versao: '1.0.0',
         status: 'online',
-        database: 'MongoDB Atlas',
+        ambiente: process.env.NODE_ENV || 'desenvolvimento',
+        database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
         endpoints: {
             auth: {
                 registro: 'POST /api/auth/register',
@@ -605,14 +655,14 @@ app.get('/', (req, res) => {
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'OK',
-        database: 'MongoDB Atlas',
+        ambiente: process.env.NODE_ENV || 'desenvolvimento',
+        database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
         uptime: process.uptime(),
         timestamp: new Date().toISOString()
     });
 });
 
 // ========== TRATAMENTO DE ERROS ==========
-
 // 404
 app.use('*', (req, res) => {
     res.status(404).json({ 
@@ -627,19 +677,18 @@ app.use((err, req, res, next) => {
     console.error('❌ Erro global:', err.stack);
     res.status(500).json({ 
         error: 'Erro interno do servidor',
-        message: err.message 
+        message: process.env.NODE_ENV === 'production' ? 'Ocorreu um erro interno' : err.message
     });
 });
 
 // ========== INICIAR SERVIDOR ==========
-
 app.listen(PORT, () => {
-    console.log('=================================');
+    console.log('\n=================================');
     console.log(`🚀 Servidor rodando na porta ${PORT}`);
     console.log(`📝 Ambiente: ${process.env.NODE_ENV || 'desenvolvimento'}`);
-    console.log(`🍃 Banco: MongoDB Atlas`);
+    console.log(`🍃 Banco: ${mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado'}`);
     console.log(`📍 URL: http://localhost:${PORT}`);
-    console.log('=================================');
+    console.log('=================================\n');
 });
 
 module.exports = app;

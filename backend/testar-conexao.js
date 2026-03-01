@@ -1,69 +1,107 @@
-const mongoose = require('mongoose');
+const { MongoClient } = require('mongodb');
 const dotenv = require('dotenv');
-const path = require('path');
+const mongoose = require('mongoose');
 
 // Carregar variáveis de ambiente
 dotenv.config();
 
-// Mostrar as variáveis (sem a senha completa por segurança)
-console.log('📋 Verificando configurações:');
-console.log('MONGODB_USER:', process.env.MONGODB_USER || 'não definido');
-console.log('MONGODB_CLUSTER:', process.env.MONGODB_CLUSTER || 'não definido');
-console.log('MONGODB_DATABASE:', process.env.MONGODB_DATABASE || 'não definido');
-console.log('MONGODB_PASSWORD:', process.env.MONGODB_PASSWORD ? '******' : 'não definido');
+async function testarTodasConexoes() {
+    console.log('\n🔍 TESTE COMPLETO DE CONEXÕES MONGODB');
+    console.log('=====================================\n');
+    
+    // Lista de URIs para testar
+    const conexoes = [
+        {
+            nome: 'Atlas (string do .env)',
+            uri: process.env.MONGODB_URI,
+            tipo: 'atlas'
+        },
+        {
+            nome: 'Atlas (fixa)',
+            uri: 'mongodb+srv://wesleyMD:hmfDrXCB3jJO1Zqg@sustentabilidade.cn2gymg.mongodb.net/ecoroute?retryWrites=true&w=majority',
+            tipo: 'atlas'
+        },
+        {
+            nome: 'Local (desenvolvimento)',
+            uri: 'mongodb://localhost:27017/ecoroute-dev',
+            tipo: 'local'
+        },
+        {
+            nome: 'Docker (com autenticação)',
+            uri: 'mongodb://admin:admin123@localhost:27017/ecoroute?authSource=admin',
+            tipo: 'docker'
+        },
+        {
+            nome: 'Docker (sem autenticação)',
+            uri: 'mongodb://localhost:27017/ecoroute',
+            tipo: 'docker'
+        }
+    ];
 
-async function testarConexao() {
-    try {
-        // Construir a URI
-        const user = process.env.MONGODB_USER || 'wesleyMD';
-        const password = process.env.MONGODB_PASSWORD;
-        const cluster = process.env.MONGODB_CLUSTER || 'sustentabilidade.cn2gymg.mongodb.net';
-        const database = process.env.MONGODB_DATABASE || 'ecoroute';
-        
-        if (!password) {
-            console.error('❌ ERRO: MONGODB_PASSWORD não está definida no arquivo .env');
-            console.log('💡 Adicione no arquivo .env: MONGODB_PASSWORD=sua_senha_aqui');
-            return;
+    let algumaConexaoFuncionou = false;
+
+    for (const conn of conexoes) {
+        if (!conn.uri) {
+            console.log(`❌ ${conn.nome}: URI não definida`);
+            continue;
         }
-        
-        const uri = `mongodb+srv://${user}:${password}@${cluster}/${database}?retryWrites=true&w=majority`;
-        
-        // Mostrar URI (escondendo a senha)
-        const uriLog = uri.replace(password, '******');
-        console.log('\n🔌 Tentando conectar com:', uriLog);
-        
-        await mongoose.connect(uri, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
+
+        console.log(`\n📡 Testando: ${conn.nome}`);
+        const safeURI = conn.uri.replace(/:([^@]+)@/, ':****@');
+        console.log(`   URI: ${safeURI}`);
+
+        // Teste com MongoClient direto
+        const client = new MongoClient(conn.uri, {
+            connectTimeoutMS: 5000,
+            serverSelectionTimeoutMS: 5000
         });
-        
-        console.log('✅ CONEXÃO BEM SUCEDIDA!');
-        
-        // Listar databases disponíveis
-        const admin = mongoose.connection.db.admin();
-        const dbs = await admin.listDatabases();
-        console.log('\n📊 Bancos de dados disponíveis:');
-        dbs.databases.forEach(db => {
-            console.log(`   - ${db.name}`);
-        });
-        
-    } catch (error) {
-        console.error('\n❌ ERRO DETALHADO:');
-        console.error('Mensagem:', error.message);
-        
-        if (error.message.includes('bad auth')) {
-            console.log('\n🔍 POSSÍVEIS CAUSAS:');
-            console.log('1. Senha incorreta no arquivo .env');
-            console.log('2. Usuário incorreto (deve ser wesleyMD)');
-            console.log('3. IP não liberado no MongoDB Atlas');
-            console.log('\n📝 SOLUÇÕES:');
-            console.log('1. Verifique a senha no MongoDB Atlas');
-            console.log('2. Acesse https://cloud.mongodb.com > Network Access > Add IP Address');
-            console.log('3. Adicione 0.0.0.0/0 para liberar todos os IPs (apenas para teste)');
+
+        try {
+            await client.connect();
+            console.log(`   ✅ MongoClient: CONECTADO!`);
+            
+            // Listar databases
+            const admin = client.db().admin();
+            const dbs = await admin.listDatabases();
+            console.log(`   📊 Databases: ${dbs.databases.map(db => db.name).join(', ')}`);
+            
+            algumaConexaoFuncionou = true;
+            await client.close();
+        } catch (err) {
+            console.log(`   ❌ MongoClient: ${err.message}`);
         }
-    } finally {
-        await mongoose.disconnect();
+
+        // Teste com Mongoose
+        try {
+            await mongoose.connect(conn.uri);
+            console.log(`   ✅ Mongoose: CONECTADO!`);
+            await mongoose.disconnect();
+        } catch (err) {
+            console.log(`   ❌ Mongoose: ${err.message}`);
+        }
     }
+
+    console.log('\n=====================================');
+    if (algumaConexaoFuncionou) {
+        console.log('✅ PELO MENOS UMA CONEXÃO FUNCIONOU!');
+        console.log('   Use uma das URIs que funcionaram no seu .env');
+    } else {
+        console.log('❌ NENHUMA CONEXÃO FUNCIONOU!');
+        console.log('\n🔧 SOLUÇÕES:');
+        console.log('   1. Para MongoDB LOCAL:');
+        console.log('      • Instale o MongoDB: https://www.mongodb.com/try/download/community');
+        console.log('      • Execute: mongod');
+        console.log('');
+        console.log('   2. Para MongoDB DOCKER:');
+        console.log('      • docker run -d -p 27017:27017 --name mongodb mongo:6');
+        console.log('');
+        console.log('   3. Para MongoDB ATLAS:');
+        console.log('      • Acesse https://cloud.mongodb.com');
+        console.log('      • Vá em Network Access e adicione seu IP');
+        console.log('      • Verifique se o usuário/senha estão corretos');
+    }
+    console.log('=====================================\n');
 }
 
-testarConexao();
+// Executar testes
+testarTodasConexoes();
