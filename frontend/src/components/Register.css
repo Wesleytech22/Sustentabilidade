@@ -1,0 +1,14 @@
+/* Reutiliza os mesmos estilos do login */
+@import './Login.css';
+
+/* Estilos adicionais para o formulário de registro */
+.input-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.input-row .input-group {
+  margin-bottom: 0;
+}

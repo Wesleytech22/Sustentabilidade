@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import './components.css';
+import './Register.css';
 
 const Register = () => {
   const [formData, setFormData] = useState({
@@ -47,9 +47,9 @@ const Register = () => {
   };
 
   return (
-    <div className="auth-container">
-      <div className="auth-card">
-        <div className="logo">
+    <div className="login-container">
+      <div className="login-card">
+        <div className="login-logo">
           <i className="fas fa-recycle"></i>
           <h1>EcoRoute</h1>
           <p>Crie sua conta</p>
@@ -96,16 +96,31 @@ const Register = () => {
             />
           </div>
 
-          <div className="input-group">
-            <i className="fas fa-phone"></i>
-            <input
-              type="tel"
-              name="phone"
-              placeholder="Telefone"
-              value={formData.phone}
-              onChange={handleChange}
-              disabled={loading}
-            />
+          <div className="input-row">
+            <div className="input-group">
+              <i className="fas fa-phone"></i>
+              <input
+                type="tel"
+                name="phone"
+                placeholder="Telefone"
+                value={formData.phone}
+                onChange={handleChange}
+                disabled={loading}
+              />
+            </div>
+
+            <div className="input-group">
+              <i className="fas fa-lock"></i>
+              <input
+                type="password"
+                name="password"
+                placeholder="Senha"
+                value={formData.password}
+                onChange={handleChange}
+                required
+                disabled={loading}
+              />
+            </div>
           </div>
 
           <div className="input-row">
@@ -135,19 +150,6 @@ const Register = () => {
             </div>
           </div>
 
-          <div className="input-group">
-            <i className="fas fa-lock"></i>
-            <input
-              type="password"
-              name="password"
-              placeholder="Senha"
-              value={formData.password}
-              onChange={handleChange}
-              required
-              disabled={loading}
-            />
-          </div>
-
           <button 
             type="submit" 
             className="btn-login"
@@ -155,7 +157,7 @@ const Register = () => {
           >
             {loading ? (
               <>
-                <i className="fas fa-spinner fa-spin"></i>
+                <i className="fas fa-spinner"></i>
                 Cadastrando...
               </>
             ) : (

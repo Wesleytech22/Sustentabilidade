@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import './components.css';
+import './Login.css'; // Importando o CSS específico
 
 const Login = () => {
   const [formData, setFormData] = useState({
@@ -38,9 +38,9 @@ const Login = () => {
   };
 
   return (
-    <div className="auth-container">
-      <div className="auth-card">
-        <div className="logo">
+    <div className="login-container">
+      <div className="login-card">
+        <div className="login-logo">
           <i className="fas fa-recycle"></i>
           <h1>EcoRoute</h1>
           <p>Logística Reversa Inteligente</p>
@@ -87,7 +87,7 @@ const Login = () => {
           >
             {loading ? (
               <>
-                <i className="fas fa-spinner fa-spin"></i>
+                <i className="fas fa-spinner"></i>
                 Entrando...
               </>
             ) : (

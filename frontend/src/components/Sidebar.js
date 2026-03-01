@@ -11,18 +11,21 @@ const Sidebar = ({ user, onLogout }) => {
 
       <nav className="sidebar-nav">
         <NavLink to="/dashboard" end className={({ isActive }) => isActive ? 'active' : ''}>
-          <i className="fas fa-home"></i>
+          <i className="fas fa-chart-line"></i>
           <span>Dashboard</span>
         </NavLink>
-        <NavLink to="/dashboard/points">
+        
+        <NavLink to="/dashboard/points" className={({ isActive }) => isActive ? 'active' : ''}>
           <i className="fas fa-map-marker-alt"></i>
           <span>Pontos de Coleta</span>
         </NavLink>
-        <NavLink to="/dashboard/routes">
+        
+        <NavLink to="/dashboard/routes" className={({ isActive }) => isActive ? 'active' : ''}>
           <i className="fas fa-route"></i>
           <span>Rotas</span>
         </NavLink>
-        <NavLink to="/dashboard/impact">
+        
+        <NavLink to="/dashboard/impact" className={({ isActive }) => isActive ? 'active' : ''}>
           <i className="fas fa-leaf"></i>
           <span>Impacto Ambiental</span>
         </NavLink>
@@ -32,11 +35,11 @@ const Sidebar = ({ user, onLogout }) => {
         <div className="user-info">
           <i className="fas fa-user-circle"></i>
           <div>
-            <p>{user?.name || 'Usuário'}</p>
-            <small>{user?.role === 'ADMIN' ? 'Administrador' : 'Cooperativa'}</small>
+            <p className="user-name">{user?.name || 'Usuário'}</p>
+            <p className="user-role">{user?.role === 'ADMIN' ? 'Administrador' : 'Cooperativa'}</p>
           </div>
         </div>
-        <button className="btn-logout" onClick={onLogout}>
+        <button className="btn-logout" onClick={onLogout} title="Sair">
           <i className="fas fa-sign-out-alt"></i>
         </button>
       </div>
