@@ -1,12 +1,17 @@
+# backend/Dockerfile.dev
 FROM node:18-alpine
 
 WORKDIR /app
 
+# Copiar apenas package.json primeiro (melhor cache)
 COPY package*.json ./
+
+# Instalar TODAS as dependências (incluindo dev)
 RUN npm install
 
+# Copiar código fonte
 COPY . .
 
-EXPOSE 3000
+EXPOSE 3000 3001
 
 CMD ["npm", "run", "dev"]

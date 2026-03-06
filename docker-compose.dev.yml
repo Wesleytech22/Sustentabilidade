@@ -4,6 +4,7 @@ services:
   mongodb:
     image: mongo:6
     container_name: ecoroute-mongodb-dev
+    restart: unless-stopped
     ports:
       - "27017:27017"
     environment:
@@ -14,22 +15,61 @@ services:
       - mongodb_data_dev:/data/db
     networks:
       - ecoroute-network-dev
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecoroute-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - ecoroute-network-dev
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build: 
       context: ./backend
       dockerfile: Dockerfile.dev
     container_name: ecoroute-backend-dev
+    restart: unless-stopped
     ports:
       - "3000:3000"
+      - "3001:3001"
     environment:
       - NODE_ENV=development
       - PORT=3000
+      - SOCKET_PORT=3001
       - MONGODB_URI=mongodb://admin:admin123@mongodb:27017/ecoroute?authSource=admin
-      - JWT_SECRET=dev-secret-key
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=dev-secret-key-2024
       - JWT_EXPIRES_IN=7d
+      - EMAIL_HOST=${EMAIL_HOST}
+      - EMAIL_PORT=${EMAIL_PORT}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASS=${EMAIL_PASS}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - FRONTEND_URL=http://localhost:3001
+    env_file:
+      - .env
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - ecoroute-network-dev
     volumes:
@@ -42,8 +82,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.dev
     container_name: ecoroute-frontend-dev
+    restart: unless-stopped
     ports:
-      - "3001:3000"
+      - "80:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3000/api
+      - REACT_APP_SOCKET_URL=http://localhost:3001
     depends_on:
       - backend
     networks:
@@ -51,11 +95,31 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+    command: npm start
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: ecoroute-mongo-express-dev
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
     environment:
-      - REACT_APP_API_URL=http://localhost:3000/api
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=admin123
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - ecoroute-network-dev
 
 volumes:
   mongodb_data_dev:
+    name: ecoroute-mongodb-data-dev
+  redis_data_dev:
+    name: ecoroute-redis-data-dev
 
 networks:
   ecoroute-network-dev:

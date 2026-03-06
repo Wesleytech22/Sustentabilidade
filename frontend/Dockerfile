@@ -1,13 +1,13 @@
 # Estágio de build
-FROM node:18-alpine as build
+FROM node:20-alpine as build
 
 WORKDIR /app
 
 # Copiar arquivos de dependências
 COPY package*.json ./
 
-# Instalar dependências
-RUN npm ci
+# Instalar dependências (usando install em vez de ci)
+RUN npm install
 
 # Copiar código fonte
 COPY . .

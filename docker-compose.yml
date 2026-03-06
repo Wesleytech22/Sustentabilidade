@@ -1,27 +1,6 @@
 version: '3.8'
 
 services:
-  mongodb:
-    image: mongo:6
-    container_name: ecoroute-mongodb
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
-      MONGO_INITDB_DATABASE: ${MONGO_DATABASE}
-    volumes:
-      - mongodb_data:/data/db
-      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
-    networks:
-      - ecoroute-network
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7-alpine
     container_name: ecoroute-redis
@@ -45,20 +24,16 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-      - "3001:3001" # Porta para Socket.IO
+      - "3001:3001"
     environment:
       - NODE_ENV=production
       - PORT=3000
       - SOCKET_PORT=3001
-      # MongoDB no container
-      - MONGODB_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
-      # Redis
+      - MONGODB_URI=${MONGODB_URI}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # JWT
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
-      # Email (usando variáveis do .env)
       - EMAIL_HOST=${EMAIL_HOST}
       - EMAIL_PORT=${EMAIL_PORT}
       - EMAIL_USER=${EMAIL_USER}
@@ -66,10 +41,8 @@ services:
       - EMAIL_FROM=${EMAIL_FROM}
       - FRONTEND_URL=http://localhost:80
     env_file:
-      - .env.docker
+      - .env
     depends_on:
-      mongodb:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -90,8 +63,6 @@ services:
       - ecoroute-network
 
 volumes:
-  mongodb_data:
-    name: ecoroute-mongodb-data
   redis_data:
     name: ecoroute-redis-data
 
