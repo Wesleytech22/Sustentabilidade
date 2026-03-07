@@ -16,7 +16,7 @@ const messageSchema = new mongoose.Schema({
   },
   senderRole: {
     type: String,
-    enum: ['COOPERATIVE', 'SUPPORT', 'ADMIN'],
+    enum: ['COOPERATIVE', 'COMPANY', 'LOGISTICS', 'SUPPORT', 'ADMIN'], // ✅ CORRIGIDO: adicionados COMPANY e LOGISTICS
     default: 'COOPERATIVE'
   },
   room: { 

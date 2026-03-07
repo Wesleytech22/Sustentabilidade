@@ -47,30 +47,32 @@ const Chat = () => {
     // Receber nova mensagem
     const handleNewMessage = (msg) => {
       console.log('📨 Nova mensagem recebida:', msg);
-      setMessages(prev => [...prev, msg]);
+      setMessages(prev => Array.isArray(prev) ? [...prev, msg] : [msg]);
     };
 
     // Receber histórico
     const handleMessageHistory = (history) => {
-      console.log('📜 Histórico recebido:', history.length);
-      setMessages(history);
+      console.log('📜 Histórico recebido:', history?.length || 0);
+      setMessages(Array.isArray(history) ? history : []);
     };
 
     // Receber confirmação de leitura
     const handleMessageRead = ({ messageId }) => {
       setMessages(prev => 
-        prev.map(msg => 
-          msg._id === messageId ? { ...msg, status: 'read' } : msg
-        )
+        Array.isArray(prev) 
+          ? prev.map(msg => 
+              msg._id === messageId ? { ...msg, status: 'read' } : msg
+            )
+          : []
       );
     };
 
     // Suporte atribuído
     const handleSupportAssigned = ({ room, support, message }) => {
       console.log('🎯 Suporte atribuído:', support);
-      setRoom(room);
+      setRoom(room || 'geral');
       setSupportMode(true);
-      setMessages(prev => [...prev, message]);
+      setMessages(prev => Array.isArray(prev) ? [...prev, message] : [message]);
     };
 
     // Chat encerrado
@@ -89,7 +91,7 @@ const Chat = () => {
         timestamp: new Date(),
         isSystem: true
       };
-      setMessages(prev => [...prev, systemMsg]);
+      setMessages(prev => Array.isArray(prev) ? [...prev, systemMsg] : [systemMsg]);
     };
 
     // Registrar listeners
@@ -99,6 +101,11 @@ const Chat = () => {
     socket.on('support-assigned', handleSupportAssigned);
     socket.on('chat-ended', handleChatEnded);
 
+    // Solicitar histórico ao entrar na sala
+    if (room && isConnected) {
+      socket.emit('request-history', room);
+    }
+
     // Cleanup
     return () => {
       socket.off('new-message', handleNewMessage);
@@ -107,7 +114,7 @@ const Chat = () => {
       socket.off('support-assigned', handleSupportAssigned);
       socket.off('chat-ended', handleChatEnded);
     };
-  }, [socket]);
+  }, [socket, room, isConnected]);
 
   // Entrar na sala quando mudar
   useEffect(() => {
@@ -117,8 +124,8 @@ const Chat = () => {
     }
   }, [room, socket, isConnected, joinRoom]);
 
-  // Processar usuários digitando
-  const typingUsers = getTypingUsers(room);
+  // Processar usuários digitando - com verificação de segurança
+  const typingUsers = getTypingUsers ? getTypingUsers(room) : [];
   
   // Verificar se é suporte
   const isSupport = user?.role === 'SUPPORT' || user?.role === 'ADMIN';
@@ -127,12 +134,6 @@ const Chat = () => {
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (input.trim() && socket && isConnected) {
-      const messageData = {
-        content: input,
-        user: user.name,
-        userId: user._id
-      };
-      
       socketSendMessage(room, input);
       setInput('');
       
@@ -184,7 +185,7 @@ const Chat = () => {
         timestamp: new Date(),
         isSystem: true
       };
-      setMessages(prev => [...prev, systemMsg]);
+      setMessages(prev => Array.isArray(prev) ? [...prev, systemMsg] : [systemMsg]);
     }
   };
 
@@ -209,6 +210,7 @@ const Chat = () => {
 
   // Formatar timestamp
   const formatTime = (timestamp) => {
+    if (!timestamp) return '';
     const date = new Date(timestamp);
     return date.toLocaleTimeString('pt-BR', { 
       hour: '2-digit', 
@@ -216,13 +218,19 @@ const Chat = () => {
     });
   };
 
+  // Garantir que onlineUsers é um array
+  const safeOnlineUsers = Array.isArray(onlineUsers) ? onlineUsers : [];
+  const safeOnlineSupports = Array.isArray(onlineSupports) ? onlineSupports : [];
+  const safeSupportRequests = Array.isArray(supportRequests) ? supportRequests : [];
+  const safeMessages = Array.isArray(messages) ? messages : [];
+
   return (
     <div className="chat-container">
       <div className="chat-sidebar">
         <div className="sidebar-header">
           <h3>
             <i className="fas fa-users"></i> 
-            Usuários Online ({onlineUsers.length})
+            Usuários Online ({safeOnlineUsers.length})
           </h3>
           <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
             <span className="status-dot"></span>
@@ -232,29 +240,29 @@ const Chat = () => {
         
         {/* Lista de usuários online */}
         <ul className="online-users">
-          {onlineUsers.map(u => (
-            <li key={u.userId} className={u.userId === user?._id ? 'current-user' : ''}>
+          {safeOnlineUsers.map(u => (
+            <li key={u?.userId || Math.random()} className={u?.userId === user?._id ? 'current-user' : ''}>
               <span className="user-status online"></span>
-              <span className="user-name">{u.name}</span>
-              {u.role === 'SUPPORT' && (
+              <span className="user-name">{u?.name || 'Usuário'}</span>
+              {u?.role === 'SUPPORT' && (
                 <span className="support-badge">SUP</span>
               )}
-              {u.userId === user?._id && <span className="you-badge">você</span>}
+              {u?.userId === user?._id && <span className="you-badge">você</span>}
             </li>
           ))}
         </ul>
 
         {/* Suportes online (para usuários comuns) */}
-        {!isSupport && onlineSupports.length > 0 && (
+        {!isSupport && safeOnlineSupports.length > 0 && (
           <div className="supports-online">
             <h4>
               <i className="fas fa-headset"></i> 
-              Suportes Online ({onlineSupports.length})
+              Suportes Online ({safeOnlineSupports.length})
             </h4>
             <ul>
-              {onlineSupports.map(s => (
-                <li key={s.userId}>
-                  <span className="support-name">{s.name}</span>
+              {safeOnlineSupports.map(s => (
+                <li key={s?.userId || Math.random()}>
+                  <span className="support-name">{s?.name || 'Suporte'}</span>
                 </li>
               ))}
             </ul>
@@ -262,16 +270,16 @@ const Chat = () => {
         )}
 
         {/* Solicitações de suporte (para suportes) */}
-        {isSupport && supportRequests.length > 0 && (
+        {isSupport && safeSupportRequests.length > 0 && (
           <div className="support-requests">
             <h4>
               <i className="fas fa-question-circle"></i>
-              Solicitações ({supportRequests.length})
+              Solicitações ({safeSupportRequests.length})
             </h4>
             <ul>
-              {supportRequests.map((req, idx) => (
-                <li key={idx} className="request-item">
-                  <span className="request-user">{req.userName}</span>
+              {safeSupportRequests.map((req, idx) => (
+                <li key={req?.id || idx} className="request-item">
+                  <span className="request-user">{req?.userName || 'Usuário'}</span>
                   <button 
                     onClick={() => handleAcceptSupport(req)}
                     className="accept-support-btn"
@@ -341,37 +349,37 @@ const Chat = () => {
 
         <div className="messages-container">
           <div className="messages">
-            {messages.length === 0 ? (
+            {safeMessages.length === 0 ? (
               <div className="no-messages">
                 <i className="fas fa-comment-dots"></i>
                 <p>Nenhuma mensagem ainda. Seja o primeiro a enviar!</p>
               </div>
             ) : (
-              messages.map((msg, idx) => (
+              safeMessages.map((msg, idx) => (
                 <div 
-                  key={msg._id || idx} 
-                  className={`message ${msg.userId === user?._id ? 'own' : ''} ${msg.isSystem ? 'system' : ''}`}
+                  key={msg?._id || idx} 
+                  className={`message ${msg?.userId === user?._id ? 'own' : ''} ${msg?.isSystem ? 'system' : ''}`}
                 >
-                  {!msg.isSystem && (
+                  {!msg?.isSystem && (
                     <div className="message-header">
                       <strong className="message-sender">
-                        {msg.user || msg.userName || msg.senderName}
+                        {msg?.user || msg?.userName || msg?.senderName || 'Usuário'}
                       </strong>
-                      {msg.userId !== user?._id && msg.userRole === 'SUPPORT' && (
+                      {msg?.userId !== user?._id && msg?.userRole === 'SUPPORT' && (
                         <span className="support-tag">Suporte</span>
                       )}
                     </div>
                   )}
                   
                   <div className="message-content">
-                    <p>{msg.content || msg.message}</p>
+                    <p>{msg?.content || msg?.message || ''}</p>
                   </div>
                   
                   <div className="message-footer">
                     <span className="message-time">
-                      {formatTime(msg.timestamp || msg.createdAt)}
+                      {formatTime(msg?.timestamp || msg?.createdAt)}
                     </span>
-                    {msg.userId === user?._id && msg.status && (
+                    {msg?.userId === user?._id && msg?.status && (
                       <span className="message-status">
                         {msg.status === 'read' && <i className="fas fa-check-double read"></i>}
                         {msg.status === 'delivered' && <i className="fas fa-check"></i>}

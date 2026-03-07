@@ -8,19 +8,19 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
-const socketIo = require('socket.io');
 
 // Importar modelos e serviços
+const User = require('./src/models/User'); // 👈 IMPORT CORRETO
 const Message = require('./models/Message');
 const Notification = require('./models/Notification');
 const emailService = require('./services/emailService');
+const socketService = require('./services/socketService');
 
 // Carregar variáveis de ambiente
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const SOCKET_PORT = process.env.SOCKET_PORT || 3001;
 const isProduction = process.env.NODE_ENV === 'production';
 
 // ========== MIDDLEWARES DE SEGURANÇA E PERFORMANCE ==========
@@ -46,90 +46,47 @@ if (isProduction) {
     app.use('/api', limiter);
 }
 
-// CORS configurado
+// ========== CORS CONFIGURADO PARA TODAS AS PORTAS DE DESENVOLVIMENTO ==========
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:3002',
+    'http://localhost:3003',
+    'http://localhost:3004',
+    'http://localhost:3005',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
+    'http://127.0.0.1:3002',
+    'http://localhost'
+];
+
 app.use(cors({
     origin: isProduction 
         ? process.env.CORS_ORIGIN || 'https://seudominio.com' 
-        : '*',
+        : function(origin, callback) {
+            // Permitir requisições sem origem (como apps mobile)
+            if (!origin) return callback(null, true);
+            
+            if (allowedOrigins.indexOf(origin) !== -1 || !isProduction) {
+                callback(null, true);
+            } else {
+                callback(new Error('Not allowed by CORS'));
+            }
+        },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ========== CRIAR SERVIDOR HTTP E SOCKET.IO ==========
+// ========== CRIAR SERVIDOR HTTP ==========
 const server = http.createServer(app);
-const io = socketIo(server, {
-    cors: {
-        origin: ["http://localhost:3000", "http://localhost"],
-        methods: ["GET", "POST"],
-        credentials: true
-    },
-    transports: ['websocket', 'polling']
-});
 
-// ========== CONFIGURAÇÃO DO SOCKET.IO ==========
-io.on('connection', (socket) => {
-    console.log('🔌 Novo cliente conectado:', socket.id);
-    
-    // Entrar em uma sala (ex: por usuário ou rota)
-    socket.on('join-room', (room) => {
-        socket.join(room);
-        console.log(`📌 Cliente ${socket.id} entrou na sala: ${room}`);
-    });
-    
-    // Sair de uma sala
-    socket.on('leave-room', (room) => {
-        socket.leave(room);
-        console.log(`📌 Cliente ${socket.id} saiu da sala: ${room}`);
-    });
-    
-    // Enviar mensagem
-    socket.on('send-message', (data) => {
-        console.log(`💬 Mensagem de ${data.sender}: ${data.content}`);
-        
-        // Salvar no banco se necessário
-        if (data.save) {
-            const message = new Message({
-                content: data.content,
-                room: data.room || 'geral',
-                sender: data.userId,
-                senderName: data.senderName
-            });
-            message.save().catch(err => console.error('❌ Erro ao salvar mensagem:', err));
-        }
-        
-        // Emitir para a sala específica ou para todos
-        if (data.room) {
-            io.to(data.room).emit('new-message', data);
-        } else {
-            io.emit('new-message', data);
-        }
-    });
-    
-    // Notificação de nova coleta
-    socket.on('new-collection', (data) => {
-        io.emit('collection-update', data);
-    });
-    
-    // Atualização de rota
-    socket.on('route-update', (data) => {
-        io.emit('route-changed', data);
-    });
-    
-    // Desconexão
-    socket.on('disconnect', () => {
-        console.log('🔌 Cliente desconectado:', socket.id);
-    });
-    
-    // Erros
-    socket.on('error', (error) => {
-        console.error('❌ Erro no socket:', error);
-    });
-});
-
-// Tornar io acessível nas rotas
-app.set('io', io);
+// ========== INICIALIZAR SOCKET.IO ==========
+const io = socketService.initSocket(server);
+app.set('io', io); // Tornar io acessível nas rotas
 
 // ========== CONFIGURAÇÃO DE CONEXÃO MULTI-AMBIENTE ==========
 const connectDB = async () => {
@@ -138,21 +95,17 @@ const connectDB = async () => {
         console.log('🔌 INICIANDO CONEXÃO COM MONGODB');
         console.log('=================================');
         
-        // Mostrar configuração atual
         console.log(`📋 NODE_ENV: ${process.env.NODE_ENV || 'não definido'}`);
         
         let mongoURI = process.env.MONGODB_URI;
         
-        // Se estiver no Docker, constrói a URI a partir das variáveis individuais
         if (!mongoURI && process.env.MONGO_ROOT_USER) {
             mongoURI = `mongodb://${process.env.MONGO_ROOT_USER}:${process.env.MONGO_ROOT_PASSWORD}@mongodb:27017/${process.env.MONGO_DATABASE}?authSource=admin`;
             console.log('📦 Modo: MongoDB no Docker');
         }
-        // Se tiver URI do Atlas
         else if (mongoURI && mongoURI.includes('mongodb+srv')) {
             console.log('🌍 Modo: MongoDB Atlas (nuvem)');
         }
-        // Fallback para local - APENAS EM DESENVOLVIMENTO
         else if (!mongoURI && !isProduction) {
             mongoURI = 'mongodb://localhost:27017/ecoroute-dev';
             console.log('💻 Modo: MongoDB Local (desenvolvimento)');
@@ -161,11 +114,9 @@ const connectDB = async () => {
             throw new Error('MONGODB_URI não definida nas variáveis de ambiente em produção');
         }
 
-        // Mostrar URI (escondendo senha)
         const safeURI = mongoURI.replace(/:([^@]+)@/, ':****@');
         console.log(`📍 Conectando a: ${safeURI}`);
         
-        // Opções de conexão otimizadas - removendo keepAlive obsoleto
         const mongooseOptions = {
             maxPoolSize: isProduction ? 50 : 10,
             minPoolSize: isProduction ? 10 : 2,
@@ -196,7 +147,6 @@ const connectDB = async () => {
         console.log(`🔗 Pool: ${mongooseOptions.maxPoolSize} conexões`);
         console.log('=================================\n');
         
-        // Eventos de conexão
         mongoose.connection.on('error', (err) => {
             console.error('❌ Erro no MongoDB:', err);
         });
@@ -262,70 +212,7 @@ const connectDB = async () => {
 // Executar conexão
 connectDB();
 
-// ========== SCHEMAS ==========
-const userSchema = new mongoose.Schema({
-    email: { 
-        type: String, 
-        required: [true, 'Email é obrigatório'], 
-        unique: true,
-        lowercase: true,
-        trim: true,
-        match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Email inválido']
-    },
-    password: { 
-        type: String, 
-        required: [true, 'Senha é obrigatória'],
-        minlength: [6, 'Senha deve ter no mínimo 6 caracteres'],
-        select: false
-    },
-    name: { 
-        type: String, 
-        required: [true, 'Nome é obrigatório'],
-        trim: true,
-        maxlength: [100, 'Nome muito longo']
-    },
-    role: { 
-        type: String, 
-        enum: ['COOPERATIVE', 'COMPANY', 'LOGISTICS', 'SUPPORT', 'ADMIN'],
-        default: 'COOPERATIVE'
-    },
-    phone: { 
-        type: String,
-        trim: true
-    },
-    city: String,
-    state: {
-        type: String,
-        uppercase: true,
-        maxlength: 2
-    },
-    active: {
-        type: Boolean,
-        default: true
-    },
-    lastLogin: Date,
-    emailVerified: { 
-        type: Boolean, 
-        default: false 
-    },
-    verificationCode: String,
-    verificationCodeExpires: Date
-}, { 
-    timestamps: true,
-    toJSON: {
-        transform: (doc, ret) => {
-            delete ret.password;
-            delete ret.__v;
-            delete ret.verificationCode;
-            delete ret.verificationCodeExpires;
-            return ret;
-        }
-    }
-});
-
-userSchema.index({ email: 1 });
-userSchema.index({ city: 1, state: 1 });
-
+// ========== MODELOS ADICIONAIS (COLEÇÃO, PONTO, ROTA) ==========
 const collectionPointSchema = new mongoose.Schema({
     name: { type: String, required: [true, 'Nome é obrigatório'] },
     address: { type: String, required: [true, 'Endereço é obrigatório'] },
@@ -436,7 +323,6 @@ const collectionSchema = new mongoose.Schema({
 collectionSchema.index({ collectionPointId: 1, date: -1 });
 
 // Criar modelos
-const User = mongoose.model('User', userSchema);
 const CollectionPoint = mongoose.model('CollectionPoint', collectionPointSchema);
 const Route = mongoose.model('Route', routeSchema);
 const Collection = mongoose.model('Collection', collectionSchema);
@@ -498,7 +384,7 @@ const authorize = (...roles) => {
 
 // ========== FUNÇÕES AUXILIARES ==========
 const generateVerificationCode = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+    return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
 // ========== ROTAS DE AUTENTICAÇÃO ==========
@@ -506,6 +392,7 @@ app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, phone, city, state, role } = req.body;
 
+        // Validações
         if (!email || !password || !name) {
             return res.status(400).json({ 
                 error: 'Email, senha e nome são obrigatórios' 
@@ -518,62 +405,45 @@ app.post('/api/auth/register', async (req, res) => {
             });
         }
 
+        // Verificar se usuário já existe
         const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {
             return res.status(400).json({ error: 'Email já cadastrado' });
         }
 
-        const salt = await bcrypt.genSalt(12);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        // Gerar código de verificação
-        const verificationCode = generateVerificationCode();
-
-        // Validar se o role enviado é válido
+        // Validar role
         const validRoles = ['COOPERATIVE', 'COMPANY', 'LOGISTICS', 'SUPPORT', 'ADMIN'];
         const userRole = validRoles.includes(role) ? role : 'COOPERATIVE';
 
+        // Criar usuário - a senha será hasheada automaticamente pelo pre('save')
         const user = new User({
             email: email.toLowerCase(),
-            password: hashedPassword,
+            password: password, // O hash será feito automaticamente
             name: name.trim(),
-            phone,
-            city,
-            state: state?.toUpperCase(),
-            role: userRole,
-            verificationCode,
-            verificationCodeExpires: new Date(Date.now() + 10 * 60 * 1000) // 10 minutos
+            phone: phone || '',
+            city: city || '',
+            state: state?.toUpperCase() || '',
+            role: userRole
         });
 
         await user.save();
 
-        // ENVIAR EMAIL DE BOAS-VINDAS
-        emailService.sendWelcomeEmail(user.email, user.name)
-            .then(result => {
-                if (result.success) {
-                    console.log(`✅ Email de boas-vindas enviado para ${user.email}`);
-                } else {
-                    console.error(`❌ Falha ao enviar email para ${user.email}:`, result.error);
-                }
-            })
-            .catch(err => console.error('❌ Erro no serviço de email:', err));
-
-        // CRIAR NOTIFICAÇÃO DE BOAS-VINDAS
-        await Notification.createWelcomeNotification(user._id);
-
+        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        user.lastLogin = new Date();
-        await user.save();
+        // Retornar usuário sem a senha
+        const userResponse = user.toObject();
+        delete userResponse.password;
 
         res.status(201).json({ 
-            user,
+            success: true,
+            user: userResponse,
             token,
-            message: 'Usuário criado com sucesso! Um email de boas-vindas foi enviado.'
+            message: 'Usuário criado com sucesso!'
         });
 
     } catch (error) {
@@ -589,6 +459,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
+// LOGIN
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -597,6 +468,7 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ error: 'Email e senha são obrigatórios' });
         }
 
+        // Buscar usuário com a senha
         const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
         
         if (!user) {
@@ -607,24 +479,31 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ error: 'Usuário inativo' });
         }
 
+        // Comparar senhas
         const isValid = await bcrypt.compare(password, user.password);
+        
         if (!isValid) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
 
+        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
+        // Atualizar último login
         user.lastLogin = new Date();
         await user.save();
 
-        user.password = undefined;
+        // Remover senha da resposta
+        const userResponse = user.toObject();
+        delete userResponse.password;
 
         res.json({ 
-            user, 
+            success: true,
+            user: userResponse,
             token,
             message: 'Login realizado com sucesso'
         });
@@ -635,7 +514,6 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// ROTA DE VERIFICAÇÃO DE EMAIL
 app.post('/api/auth/verify-email', async (req, res) => {
     try {
         const { email, code } = req.body;
@@ -666,7 +544,6 @@ app.post('/api/auth/verify-email', async (req, res) => {
     }
 });
 
-// REENVIAR CÓDIGO DE VERIFICAÇÃO
 app.post('/api/auth/resend-verification', async (req, res) => {
     try {
         const { email } = req.body;
@@ -686,7 +563,6 @@ app.post('/api/auth/resend-verification', async (req, res) => {
         user.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
         await user.save();
         
-        // Enviar novo código por email
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
         
         res.json({ message: 'Código reenviado com sucesso' });
@@ -805,7 +681,6 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
             });
         }
         
-        // Notificar destinatário se for mensagem privada
         if (recipient) {
             await Notification.createMessageNotification(
                 recipient,
@@ -846,7 +721,7 @@ app.patch('/api/messages/:id/read', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'Mensagem não encontrada' });
         }
         
-        await message.markAsRead();
+        await message.markAsRead(req.userId);
         
         res.json({ message: 'Mensagem marcada como lida' });
     } catch (error) {
@@ -949,10 +824,8 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
         const route = new Route(routeData);
         await route.save();
         
-        // Criar notificação
         await Notification.createRouteNotification(req.userId, route.name);
         
-        // Notificar via socket
         const io = req.app.get('io');
         if (io) {
             io.emit('route-changed', {
@@ -1019,14 +892,12 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
         point.currentVolume += collectionData.wasteVolume;
         await point.save();
         
-        // Criar notificação
         await Notification.createCollectionNotification(
             req.userId,
             point.name,
             collectionData.wasteVolume
         );
         
-        // Notificar via socket
         const io = req.app.get('io');
         if (io) {
             io.emit('collection-update', {
@@ -1197,7 +1068,7 @@ app.get('/', (req, res) => {
         status: 'online',
         ambiente: process.env.NODE_ENV || 'desenvolvimento',
         database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
-        socket: 'disponível na porta ' + SOCKET_PORT,
+        socket: 'disponível na mesma porta do servidor',
         documentacao: '/api/docs',
         endpoints: {
             auth: {
@@ -1249,7 +1120,7 @@ app.get('/api/health', (req, res) => {
         status: 'OK',
         ambiente: process.env.NODE_ENV || 'desenvolvimento',
         database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
-        socket: 'rodando na porta ' + SOCKET_PORT,
+        socket: 'rodando na mesma porta',
         uptime: process.uptime(),
         memoria: process.memoryUsage(),
         timestamp: new Date().toISOString()
@@ -1351,26 +1222,20 @@ server.listen(PORT, () => {
     console.log(`🚀 Servidor rodando na porta ${PORT}`);
     console.log(`📝 Ambiente: ${process.env.NODE_ENV || 'desenvolvimento'}`);
     console.log(`🍃 Banco: ${mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado'}`);
-    console.log(`🔌 Socket.IO disponível na porta ${SOCKET_PORT}`);
+    console.log(`🔌 Socket.IO disponível na mesma porta (${PORT})`);
     console.log(`📍 URL: http://localhost:${PORT}`);
     console.log(`📚 Documentação: http://localhost:${PORT}/api/docs`);
     console.log('=================================\n');
 });
 
-// Iniciar Socket.IO na porta específica (opcional - se quiser separar)
-io.listen(SOCKET_PORT);
-console.log(`🔌 Socket.IO rodando na porta ${SOCKET_PORT}`);
-
-// ========== GRACEFUL SHUTDOWN (CORRIGIDO) ==========
+// ========== GRACEFUL SHUTDOWN ==========
 process.on('SIGTERM', async () => {
     console.log('\n👋 SIGTERM recebido, encerrando servidor...');
     
-    // Fechar servidor HTTP primeiro
     server.close(() => {
         console.log('💤 Servidor HTTP encerrado');
     });
     
-    // Fechar conexão MongoDB (sem callback)
     try {
         await mongoose.connection.close();
         console.log('💤 Conexão MongoDB encerrada');
@@ -1384,12 +1249,10 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
     console.log('\n👋 SIGINT recebido, encerrando servidor...');
     
-    // Fechar servidor HTTP primeiro
     server.close(() => {
         console.log('💤 Servidor HTTP encerrado');
     });
     
-    // Fechar conexão MongoDB (sem callback)
     try {
         await mongoose.connection.close();
         console.log('💤 Conexão MongoDB encerrada');

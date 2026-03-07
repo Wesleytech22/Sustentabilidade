@@ -35,14 +35,14 @@ export const SocketProvider = ({ children }) => {
     }
 
     // URL do socket (com fallback)
-    const socketUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001';
+    const socketUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3000';
     
     console.log('🔌 Conectando ao socket:', socketUrl);
     console.log('🔑 Token presente:', !!token);
     console.log('👤 Usuário:', user?.email);
     console.log('👤 Role:', user?.role);
 
-    // Criar conexão com configurações robustas
+    // Criar conexão
     const newSocket = io(socketUrl, {
       auth: { 
         token,
@@ -50,7 +50,7 @@ export const SocketProvider = ({ children }) => {
         role: user.role,
         name: user.name
       },
-      transports: ['websocket', 'polling'], // Fallback para polling se websocket falhar
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
@@ -104,23 +104,27 @@ export const SocketProvider = ({ children }) => {
       });
     });
 
-    newSocket.on('reconnect_attempt', (attemptNumber) => {
-      console.log('🔄 Tentativa de reconexão:', attemptNumber);
-    });
-
-    // ========== EVENTOS DE USUÁRIOS ==========
+    // ========== EVENTOS DE USUÁRIOS ONLINE ==========
     newSocket.on('online-users', (users) => {
-      console.log('👥 Usuários online:', users.length);
-      setOnlineUsers(users);
-      
-      // Filtrar suportes online
-      const supports = users.filter(u => u.role === 'SUPPORT' || u.role === 'ADMIN');
-      setOnlineSupports(supports);
+      // ✅ VERIFICAÇÃO: garantir que users é um array
+      if (Array.isArray(users)) {
+        console.log('👥 Usuários online:', users.length);
+        setOnlineUsers(users);
+        
+        // Filtrar suportes online
+        const supports = users.filter(u => u.role === 'SUPPORT' || u.role === 'ADMIN');
+        setOnlineSupports(supports);
+      } else {
+        console.log('⚠️ online-users não é um array:', users);
+        setOnlineUsers([]);
+        setOnlineSupports([]);
+      }
     });
 
     newSocket.on('user-joined', (userData) => {
       console.log('➕ Usuário entrou:', userData.name);
       setOnlineUsers(prev => {
+        if (!Array.isArray(prev)) return [userData];
         if (prev.some(u => u.userId === userData.userId)) return prev;
         return [...prev, userData];
       });
@@ -128,29 +132,36 @@ export const SocketProvider = ({ children }) => {
 
     newSocket.on('user-left', (userId) => {
       console.log('➖ Usuário saiu:', userId);
-      setOnlineUsers(prev => prev.filter(u => u.userId !== userId));
+      setOnlineUsers(prev => {
+        if (!Array.isArray(prev)) return [];
+        return prev.filter(u => u.userId !== userId);
+      });
     });
 
     // ========== EVENTOS DE MENSAGENS ==========
     newSocket.on('new-message', (message) => {
       console.log('💬 Nova mensagem:', message);
       setMessages(prev => {
-        const roomMessages = prev[message.room] || [];
- // Evitar duplicatas
-        if (roomMessages.some(m => m._id === message._id)) return prev;
+        const current = prev || {};
+        const room = message?.room || 'geral';
+        const roomMessages = Array.isArray(current[room]) ? current[room] : [];
+        
+        // Evitar duplicatas
+        if (roomMessages.some(m => m?._id === message?._id)) return current;
+        
         return {
-          ...prev,
-          [message.room]: [...roomMessages, message]
+          ...current,
+          [room]: [...roomMessages, message]
         };
       });
 
       // Notificação de nova mensagem (se não for do usuário atual)
-      if (message.sender !== user._id) {
+      if (message.sender !== user?._id) {
         const notification = {
           id: `msg_${message._id}`,
           type: 'message',
           title: `Nova mensagem de ${message.senderName}`,
-          message: message.content.length > 50 
+          message: message.content?.length > 50 
             ? message.content.substring(0, 50) + '...' 
             : message.content,
           room: message.room,
@@ -158,35 +169,43 @@ export const SocketProvider = ({ children }) => {
           read: false
         };
         
-        setNotifications(prev => [notification, ...prev]);
+        setNotifications(prev => {
+          const current = Array.isArray(prev) ? prev : [];
+          return [notification, ...current];
+        });
       }
     });
 
     newSocket.on('message-history', ({ room, history }) => {
-      console.log(`📜 Histórico da sala ${room}:`, history.length);
+      console.log(`📜 Histórico da sala ${room}:`, history?.length || 0);
       setMessages(prev => ({
-        ...prev,
-        [room]: history
+        ...(prev || {}),
+        [room]: Array.isArray(history) ? history : []
       }));
     });
 
     newSocket.on('message-read', ({ messageId, room, userId }) => {
-      setMessages(prev => ({
-        ...prev,
-        [room]: prev[room]?.map(msg => 
-          msg._id === messageId 
-            ? { ...msg, status: 'read', readBy: [...(msg.readBy || []), userId] }
-            : msg
-        )
-      }));
+      setMessages(prev => {
+        const current = prev || {};
+        const roomMessages = Array.isArray(current[room]) ? current[room] : [];
+        
+        return {
+          ...current,
+          [room]: roomMessages.map(msg => 
+            msg._id === messageId 
+              ? { ...msg, status: 'read', readBy: [...(msg.readBy || []), userId] }
+              : msg
+          )
+        };
+      });
     });
 
     // ========== EVENTOS DE DIGITAÇÃO ==========
     newSocket.on('user-typing', ({ userId, name, room, isTyping }) => {
       setTypingUsers(prev => ({
-        ...prev,
+        ...(prev || {}),
         [room]: {
-          ...prev[room],
+          ...(prev[room] || {}),
           [userId]: { name, isTyping }
         }
       }));
@@ -199,9 +218,9 @@ export const SocketProvider = ({ children }) => {
         
         typingTimeoutRef.current[userId] = setTimeout(() => {
           setTypingUsers(prev => ({
-            ...prev,
+            ...(prev || {}),
             [room]: {
-              ...prev[room],
+              ...(prev[room] || {}),
               [userId]: { name, isTyping: false }
             }
           }));
@@ -213,23 +232,21 @@ export const SocketProvider = ({ children }) => {
     newSocket.on('notification', (notification) => {
       console.log('🔔 Nova notificação:', notification);
       setNotifications(prev => {
+        const current = Array.isArray(prev) ? prev : [];
         // Evitar duplicatas
-        if (prev.some(n => n.id === notification.id)) return prev;
-        return [notification, ...prev];
+        if (current.some(n => n.id === notification?.id)) return current;
+        return [notification, ...current];
       });
-
-      // Se for notificação de áudio, tocar som
-      if (notification.sound) {
-        const audio = new Audio('/sounds/notification.mp3');
-        audio.play().catch(e => console.log('🔇 Áudio bloqueado:', e));
-      }
     });
 
     // ========== EVENTOS DE SUPORTE ==========
     newSocket.on('support-request', (request) => {
       console.log('🎯 Nova solicitação de suporte:', request);
       if (user?.role === 'SUPPORT' || user?.role === 'ADMIN') {
-        setSupportRequests(prev => [request, ...prev]);
+        setSupportRequests(prev => {
+          const current = Array.isArray(prev) ? prev : [];
+          return [request, ...current];
+        });
         
         // Notificação para suporte
         const notification = {
@@ -243,7 +260,10 @@ export const SocketProvider = ({ children }) => {
           sound: true
         };
         
-        setNotifications(prev => [notification, ...prev]);
+        setNotifications(prev => {
+          const current = Array.isArray(prev) ? prev : [];
+          return [notification, ...current];
+        });
       }
     });
 
@@ -252,10 +272,14 @@ export const SocketProvider = ({ children }) => {
       setActiveSupportChat({ room, support });
       
       // Adicionar mensagem de sistema
-      setMessages(prev => ({
-        ...prev,
-        [room]: [...(prev[room] || []), message]
-      }));
+      setMessages(prev => {
+        const current = prev || {};
+        const roomMessages = Array.isArray(current[room]) ? current[room] : [];
+        return {
+          ...current,
+          [room]: [...roomMessages, message]
+        };
+      });
     });
 
     newSocket.on('chat-ended', ({ room }) => {
@@ -272,10 +296,14 @@ export const SocketProvider = ({ children }) => {
         isSystem: true
       };
       
-      setMessages(prev => ({
-        ...prev,
-        [room]: [...(prev[room] || []), systemMessage]
-      }));
+      setMessages(prev => {
+        const current = prev || {};
+        const roomMessages = Array.isArray(current[room]) ? current[room] : [];
+        return {
+          ...current,
+          [room]: [...roomMessages, systemMessage]
+        };
+      });
       
       setActiveSupportChat(null);
     });
@@ -283,9 +311,9 @@ export const SocketProvider = ({ children }) => {
     newSocket.on('support-typing', ({ userId, name, isTyping }) => {
       if (activeSupportChat) {
         setTypingUsers(prev => ({
-          ...prev,
+          ...(prev || {}),
           [activeSupportChat.room]: {
-            ...prev[activeSupportChat.room],
+            ...(prev[activeSupportChat.room] || {}),
             [userId]: { name, isTyping }
           }
         }));
@@ -309,7 +337,7 @@ export const SocketProvider = ({ children }) => {
       }
       newSocket.removeAllListeners();
     };
-  }, [user, token]); // Dependências corretas
+  }, [user, token]);
 
   // ========== FUNÇÕES DO SOCKET ==========
 
@@ -324,9 +352,9 @@ export const SocketProvider = ({ children }) => {
       room,
       content,
       recipient,
-      sender: user._id,
-      senderName: user.name,
-      senderRole: user.role,
+      sender: user?._id,
+      senderName: user?.name,
+      senderRole: user?.role,
       timestamp: new Date().toISOString()
     };
     
@@ -342,12 +370,7 @@ export const SocketProvider = ({ children }) => {
     }
     
     console.log(`👥 Entrando na sala: ${room}`);
-    socketRef.current.emit('join-room', { 
-      room, 
-      userId: user._id,
-      name: user.name,
-      role: user.role
-    });
+    socketRef.current.emit('join-room', room);
     
     // Solicitar histórico da sala
     socketRef.current.emit('request-history', room);
@@ -360,7 +383,7 @@ export const SocketProvider = ({ children }) => {
     if (!socketRef.current?.connected) return false;
     
     console.log(`👋 Saindo da sala: ${room}`);
-    socketRef.current.emit('leave-room', { room, userId: user._id });
+    socketRef.current.emit('leave-room', room);
     return true;
   }, [user]);
 
@@ -370,13 +393,21 @@ export const SocketProvider = ({ children }) => {
     
     socketRef.current.emit('typing', {
       room,
-      userId: user._id,
-      name: user.name,
+      userId: user?._id,
+      name: user?.name,
       isTyping
     });
     
     return true;
   }, [user]);
+
+  // Obter usuários digitando em uma sala
+  const getTypingUsers = useCallback((room) => {
+    const roomData = typingUsers[room] || {};
+    return Object.values(roomData)
+      .filter(data => data.isTyping)
+      .map(data => data.name);
+  }, [typingUsers]);
 
   // Marcar mensagem como lida
   const markMessageAsRead = useCallback((messageId, room) => {
@@ -385,7 +416,7 @@ export const SocketProvider = ({ children }) => {
     socketRef.current.emit('message-read', {
       messageId,
       room,
-      userId: user._id
+      userId: user?._id
     });
     
     return true;
@@ -399,8 +430,8 @@ export const SocketProvider = ({ children }) => {
       recipient: recipientId,
       notification: {
         ...notification,
-        senderId: user._id,
-        senderName: user.name,
+        senderId: user?._id,
+        senderName: user?.name,
         timestamp: new Date().toISOString()
       }
     });
@@ -415,8 +446,8 @@ export const SocketProvider = ({ children }) => {
     
     console.log('🎯 Solicitando suporte...');
     socketRef.current.emit('request-support', {
-      userId: user._id,
-      userName: user.name,
+      userId: user?._id,
+      userName: user?.name,
       department,
       timestamp: new Date().toISOString()
     });
@@ -427,23 +458,26 @@ export const SocketProvider = ({ children }) => {
   // Aceitar solicitação de suporte (para suportes)
   const acceptSupportRequest = useCallback((requestId, userId) => {
     if (!socketRef.current?.connected) return false;
-    if (user.role !== 'SUPPORT' && user.role !== 'ADMIN') return false;
+    if (user?.role !== 'SUPPORT' && user?.role !== 'ADMIN') return false;
     
     console.log('✅ Aceitando solicitação de suporte:', requestId);
     
     // Criar sala única para o chat
-    const room = `support_${userId}_${user._id}`;
+    const room = `support_${userId}_${user?._id}`;
     
     socketRef.current.emit('accept-support', {
       requestId,
       userId,
-      supportId: user._id,
-      supportName: user.name,
+      supportId: user?._id,
+      supportName: user?.name,
       room
     });
     
     // Remover da lista de solicitações
-    setSupportRequests(prev => prev.filter(r => r.id !== requestId));
+    setSupportRequests(prev => {
+      const current = Array.isArray(prev) ? prev : [];
+      return current.filter(r => r.id !== requestId);
+    });
     
     return room;
   }, [user]);
@@ -456,7 +490,7 @@ export const SocketProvider = ({ children }) => {
     socketRef.current.emit('end-support', {
       room,
       userId,
-      supportId: user._id
+      supportId: user?._id
     });
     
     setActiveSupportChat(null);
@@ -467,18 +501,20 @@ export const SocketProvider = ({ children }) => {
 
   // Marcar notificação como lida
   const markNotificationAsRead = useCallback((notificationId) => {
-    setNotifications(prev => 
-      prev.map(n => 
+    setNotifications(prev => {
+      const current = Array.isArray(prev) ? prev : [];
+      return current.map(n => 
         n.id === notificationId ? { ...n, read: true } : n
-      )
-    );
+      );
+    });
   }, []);
 
   // Marcar todas notificações como lidas
   const markAllNotificationsAsRead = useCallback(() => {
-    setNotifications(prev => 
-      prev.map(n => ({ ...n, read: true }))
-    );
+    setNotifications(prev => {
+      const current = Array.isArray(prev) ? prev : [];
+      return current.map(n => ({ ...n, read: true }));
+    });
   }, []);
 
   // Limpar notificações
@@ -488,26 +524,18 @@ export const SocketProvider = ({ children }) => {
 
   // Remover notificação específica
   const removeNotification = useCallback((notificationId) => {
-    setNotifications(prev => prev.filter(n => n.id !== notificationId));
+    setNotifications(prev => {
+      const current = Array.isArray(prev) ? prev : [];
+      return current.filter(n => n.id !== notificationId);
+    });
   }, []);
-
-  // ========== FUNÇÕES AUXILIARES ==========
-
-  // Obter usuários digitando em uma sala
-  const getTypingUsers = useCallback((room) => {
-    if (!typingUsers[room]) return [];
-    
-    return Object.entries(typingUsers[room])
-      .filter(([_, data]) => data.isTyping && data.name !== user.name)
-      .map(([id, data]) => data.name);
-  }, [typingUsers, user]);
 
   // Obter mensagens não lidas em uma sala
   const getUnreadCount = useCallback((room) => {
-    const roomMessages = messages[room] || [];
+    const roomMessages = (messages[room] || []);
     return roomMessages.filter(msg => 
-      msg.sender !== user._id && 
-      (!msg.readBy || !msg.readBy.includes(user._id))
+      msg.sender !== user?._id && 
+      (!msg.readBy || !msg.readBy.includes(user?._id))
     ).length;
   }, [messages, user]);
 
@@ -522,12 +550,12 @@ export const SocketProvider = ({ children }) => {
     // Estado
     socket: socketRef.current,
     isConnected,
-    onlineUsers,
-    onlineSupports,
-    notifications,
-    messages,
-    typingUsers,
-    supportRequests,
+    onlineUsers: Array.isArray(onlineUsers) ? onlineUsers : [],
+    onlineSupports: Array.isArray(onlineSupports) ? onlineSupports : [],
+    notifications: Array.isArray(notifications) ? notifications : [],
+    messages: messages || {},
+    typingUsers: typingUsers || {},
+    supportRequests: Array.isArray(supportRequests) ? supportRequests : [],
     activeSupportChat,
     
     // Funções gerais
@@ -536,6 +564,9 @@ export const SocketProvider = ({ children }) => {
     leaveRoom,
     sendTyping,
     markMessageAsRead,
+    getTypingUsers,
+    getUnreadCount,
+    getLastMessage,
     
     // Funções de notificação
     sendNotification,
@@ -549,14 +580,13 @@ export const SocketProvider = ({ children }) => {
     acceptSupportRequest,
     endSupportChat,
     
-    // Funções auxiliares
-    getTypingUsers,
-    getUnreadCount,
-    getLastMessage,
-    
     // Contadores
-    unreadCount: notifications.filter(n => !n.read).length,
-    pendingSupportRequests: supportRequests.length
+    unreadCount: Array.isArray(notifications) 
+      ? notifications.filter(n => !n?.read).length 
+      : 0,
+    pendingSupportRequests: Array.isArray(supportRequests) 
+      ? supportRequests.length 
+      : 0
   };
 
   return (

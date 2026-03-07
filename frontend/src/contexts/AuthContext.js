@@ -18,8 +18,11 @@ export const AuthProvider = ({ children }) => {
 
   // Configurar axios com a URL base
   const api = axios.create({
-    baseURL: 'http://localhost:3000/api',
+    baseURL: process.env.REACT_APP_API_URL || 'http://localhost:3000/api',
     timeout: 10000,
+    headers: {
+      'Content-Type': 'application/json'
+    }
   });
 
   // Interceptor para adicionar token
@@ -54,15 +57,33 @@ export const AuthProvider = ({ children }) => {
     loadUser();
   }, [token]);
 
+  // ===== FUNÇÃO DE LOGIN CORRIGIDA =====
   const login = async (email, password) => {
     try {
       const response = await api.post('/auth/login', { email, password });
-      const { token, user } = response.data;
-      localStorage.setItem('token', token);
-      setToken(token);
-      setUser(user);
-      return { success: true };
+      
+      // Verificar se a resposta tem o formato esperado
+      if (response.data.success && response.data.token) {
+        const { token, user } = response.data;
+        localStorage.setItem('token', token);
+        setToken(token);
+        setUser(user);
+        return { success: true, user };
+      } else if (response.data.token) {
+        // Formato alternativo (sem campo success)
+        const { token, user } = response.data;
+        localStorage.setItem('token', token);
+        setToken(token);
+        setUser(user);
+        return { success: true, user };
+      } else {
+        return { 
+          success: false, 
+          error: response.data.error || 'Resposta inválida do servidor' 
+        };
+      }
     } catch (error) {
+      console.error('Erro no login:', error);
       return { 
         success: false, 
         error: error.response?.data?.error || 'Erro ao conectar ao servidor' 
@@ -70,11 +91,37 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // ===== FUNÇÃO DE REGISTRO CORRIGIDA =====
   const register = async (userData) => {
     try {
+      console.log('📝 Enviando registro:', userData); // Debug
+      
       const response = await api.post('/auth/register', userData);
-      return { success: true, data: response.data };
+      
+      console.log('✅ Resposta do registro:', response.data); // Debug
+      
+      // Verificar se o registro foi bem-sucedido
+      if (response.data.success || response.data.user) {
+        // Se o servidor retornar token (login automático)
+        if (response.data.token) {
+          localStorage.setItem('token', response.data.token);
+          setToken(response.data.token);
+          setUser(response.data.user);
+        }
+        
+        return { 
+          success: true, 
+          message: response.data.message || 'Cadastro realizado com sucesso!',
+          data: response.data 
+        };
+      } else {
+        return { 
+          success: false, 
+          error: response.data.error || 'Erro ao cadastrar' 
+        };
+      }
     } catch (error) {
+      console.error('❌ Erro no registro:', error);
       return { 
         success: false, 
         error: error.response?.data?.error || 'Erro ao conectar ao servidor' 
@@ -82,6 +129,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // ===== FUNÇÃO DE LOGOUT =====
   const logout = () => {
     localStorage.removeItem('token');
     setToken(null);
@@ -96,6 +144,7 @@ export const AuthProvider = ({ children }) => {
     loading,
     api,
     isAuthenticated: !!user,
+    token
   };
 
   return (
