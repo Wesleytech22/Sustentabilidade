@@ -10,11 +10,14 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 
 // Importar modelos e serviços
-const User = require('./src/models/User'); // 👈 IMPORT CORRETO
+const User = require('./src/models/User');
 const Message = require('./models/Message');
 const Notification = require('./models/Notification');
 const emailService = require('./services/emailService');
 const socketService = require('./services/socketService');
+
+// Importar rota de IA
+const aiRoutes = require('./src/routes/ai.routes');
 
 // Carregar variáveis de ambiente
 dotenv.config();
@@ -24,29 +27,24 @@ const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
 // ========== MIDDLEWARES DE SEGURANÇA E PERFORMANCE ==========
-// Helmet para headers de segurança
 app.use(helmet({
     contentSecurityPolicy: isProduction ? undefined : false,
 }));
 
-// Compressão Gzip
 app.use(compression());
 
-// Rate limiting - Prevenir brute force
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutos
-    max: 100, // limite por IP
+    windowMs: 15 * 60 * 1000,
+    max: 100,
     message: { error: 'Muitas requisições deste IP, tente novamente após 15 minutos' },
     standardHeaders: true,
     legacyHeaders: false,
 });
 
-// Aplicar rate limiting apenas em produção
 if (isProduction) {
     app.use('/api', limiter);
 }
 
-// ========== CORS CONFIGURADO PARA TODAS AS PORTAS DE DESENVOLVIMENTO ==========
 const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:3001',
@@ -64,9 +62,7 @@ app.use(cors({
     origin: isProduction 
         ? process.env.CORS_ORIGIN || 'https://seudominio.com' 
         : function(origin, callback) {
-            // Permitir requisições sem origem (como apps mobile)
             if (!origin) return callback(null, true);
-            
             if (allowedOrigins.indexOf(origin) !== -1 || !isProduction) {
                 callback(null, true);
             } else {
@@ -86,7 +82,7 @@ const server = http.createServer(app);
 
 // ========== INICIALIZAR SOCKET.IO ==========
 const io = socketService.initSocket(server);
-app.set('io', io); // Tornar io acessível nas rotas
+app.set('io', io);
 
 // ========== CONFIGURAÇÃO DE CONEXÃO MULTI-AMBIENTE ==========
 const connectDB = async () => {
@@ -209,80 +205,37 @@ const connectDB = async () => {
     }
 };
 
-// Executar conexão
 connectDB();
 
-// ========== MODELOS ADICIONAIS (COLEÇÃO, PONTO, ROTA) ==========
+// ========== MODELOS ==========
 const collectionPointSchema = new mongoose.Schema({
     name: { type: String, required: [true, 'Nome é obrigatório'] },
     address: { type: String, required: [true, 'Endereço é obrigatório'] },
     neighborhood: String,
     city: { type: String, required: [true, 'Cidade é obrigatória'] },
     state: { type: String, required: [true, 'Estado é obrigatório'], uppercase: true },
-    latitude: {
-        type: Number,
-        min: -90,
-        max: 90
-    },
-    longitude: {
-        type: Number,
-        min: -180,
-        max: 180
-    },
+    latitude: { type: Number, min: -90, max: 90 },
+    longitude: { type: Number, min: -180, max: 180 },
     wasteTypes: [{
         type: String,
         enum: ['plastico', 'papel', 'vidro', 'metal', 'organico', 'eletronico']
     }],
-    capacity: { 
-        type: Number, 
-        required: [true, 'Capacidade é obrigatória'],
-        min: [0, 'Capacidade deve ser positiva']
-    },
-    currentVolume: { 
-        type: Number, 
-        default: 0,
-        min: 0,
-        validate: {
-            validator: function(v) {
-                return v <= this.capacity;
-            },
-            message: 'Volume atual não pode exceder a capacidade'
-        }
-    },
-    status: { 
-        type: String, 
-        default: 'ACTIVE',
-        enum: ['ACTIVE', 'INACTIVE', 'FULL']
-    },
-    userId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'User', 
-        required: true,
-        index: true
-    }
-}, { 
-    timestamps: true,
-    toJSON: { virtuals: true }
-});
+    capacity: { type: Number, required: [true, 'Capacidade é obrigatória'], min: [0, 'Capacidade deve ser positiva'] },
+    currentVolume: { type: Number, default: 0, min: 0 },
+    status: { type: String, default: 'ACTIVE', enum: ['ACTIVE', 'INACTIVE', 'FULL'] },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true }
+}, { timestamps: true, toJSON: { virtuals: true } });
 
 collectionPointSchema.virtual('occupancyPercentage').get(function() {
     if (this.capacity === 0) return 0;
     return Math.round((this.currentVolume / this.capacity) * 100);
 });
 
-collectionPointSchema.index({ location: '2dsphere' });
-collectionPointSchema.index({ userId: 1, status: 1 });
-collectionPointSchema.index({ city: 1, state: 1 });
-
 const routeSchema = new mongoose.Schema({
     name: { type: String, required: true },
     description: String,
     date: { type: Date, default: Date.now, index: true },
-    status: { 
-        type: String, 
-        default: 'PLANNED',
-        enum: ['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']
-    },
+    status: { type: String, default: 'PLANNED', enum: ['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] },
     points: [{
         pointId: { type: mongoose.Schema.Types.ObjectId, ref: 'CollectionPoint' },
         order: Number,
@@ -299,30 +252,16 @@ const routeSchema = new mongoose.Schema({
     completedAt: Date
 }, { timestamps: true });
 
-routeSchema.index({ userId: 1, date: -1 });
-routeSchema.index({ status: 1 });
-
 const collectionSchema = new mongoose.Schema({
-    collectionPointId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'CollectionPoint', 
-        required: true 
-    },
+    collectionPointId: { type: mongoose.Schema.Types.ObjectId, ref: 'CollectionPoint', required: true },
     routeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Route' },
     date: { type: Date, default: Date.now, index: true },
-    wasteVolume: { 
-        type: Number, 
-        required: true,
-        min: [0, 'Volume deve ser positivo']
-    },
+    wasteVolume: { type: Number, required: true, min: [0, 'Volume deve ser positivo'] },
     wasteType: String,
     notes: String,
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-collectionSchema.index({ collectionPointId: 1, date: -1 });
-
-// Criar modelos
 const CollectionPoint = mongoose.model('CollectionPoint', collectionPointSchema);
 const Route = mongoose.model('Route', routeSchema);
 const Collection = mongoose.model('Collection', collectionSchema);
@@ -337,32 +276,19 @@ const authenticateToken = async (req, res, next) => {
         }
 
         const token = authHeader.split(' ')[1];
-
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
         const user = await User.findById(decoded.id).select('-password');
         
-        if (!user) {
-            return res.status(401).json({ error: 'Usuário não encontrado' });
-        }
-
-        if (!user.active) {
-            return res.status(401).json({ error: 'Usuário inativo' });
-        }
+        if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
+        if (!user.active) return res.status(401).json({ error: 'Usuário inativo' });
 
         req.user = user;
         req.userId = user._id;
         req.userRole = user.role;
-        
         next();
     } catch (error) {
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({ error: 'Token expirado' });
-        }
-        if (error.name === 'JsonWebTokenError') {
-            return res.status(401).json({ error: 'Token inválido' });
-        }
-        
+        if (error.name === 'TokenExpiredError') return res.status(401).json({ error: 'Token expirado' });
+        if (error.name === 'JsonWebTokenError') return res.status(401).json({ error: 'Token inválido' });
         console.error('❌ Erro na autenticação:', error);
         return res.status(500).json({ error: 'Erro na autenticação' });
     }
@@ -370,14 +296,8 @@ const authenticateToken = async (req, res, next) => {
 
 const authorize = (...roles) => {
     return (req, res, next) => {
-        if (!req.userRole) {
-            return res.status(401).json({ error: 'Não autorizado' });
-        }
-        
-        if (!roles.includes(req.userRole)) {
-            return res.status(403).json({ error: 'Acesso negado' });
-        }
-        
+        if (!req.userRole) return res.status(401).json({ error: 'Não autorizado' });
+        if (!roles.includes(req.userRole)) return res.status(403).json({ error: 'Acesso negado' });
         next();
     };
 };
@@ -388,35 +308,26 @@ const generateVerificationCode = () => {
 };
 
 // ========== ROTAS DE AUTENTICAÇÃO ==========
-// ========== ROTAS DE AUTENTICAÇÃO ==========
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, phone, city, state, role } = req.body;
 
-        // Validações
         if (!email || !password || !name) {
-            return res.status(400).json({ 
-                error: 'Email, senha e nome são obrigatórios' 
-            });
+            return res.status(400).json({ error: 'Email, senha e nome são obrigatórios' });
         }
 
         if (password.length < 6) {
-            return res.status(400).json({ 
-                error: 'Senha deve ter no mínimo 6 caracteres' 
-            });
+            return res.status(400).json({ error: 'Senha deve ter no mínimo 6 caracteres' });
         }
 
-        // Verificar se usuário já existe
         const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {
             return res.status(400).json({ error: 'Email já cadastrado' });
         }
 
-        // Validar role
         const validRoles = ['COOPERATIVE', 'COMPANY', 'LOGISTICS', 'SUPPORT', 'ADMIN'];
         const userRole = validRoles.includes(role) ? role : 'COOPERATIVE';
 
-        // Criar usuário - a senha será hasheada automaticamente pelo pre('save')
         const user = new User({
             email: email.toLowerCase(),
             password: password,
@@ -429,7 +340,6 @@ app.post('/api/auth/register', async (req, res) => {
 
         await user.save();
 
-        // ========== ENVIAR EMAIL DE BOAS-VINDAS (ASSÍNCRONO) ==========
         emailService.sendWelcomeEmail(user.email, user.name)
             .then(result => {
                 if (result.success) {
@@ -442,14 +352,12 @@ app.post('/api/auth/register', async (req, res) => {
                 console.error(`❌ Erro inesperado ao enviar email para ${user.email}:`, err.message);
             });
 
-        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Retornar usuário sem a senha
         const userResponse = user.toObject();
         delete userResponse.password;
 
@@ -473,7 +381,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// LOGIN
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -482,7 +389,6 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ error: 'Email e senha são obrigatórios' });
         }
 
-        // Buscar usuário com a senha
         const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
         
         if (!user) {
@@ -493,25 +399,21 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ error: 'Usuário inativo' });
         }
 
-        // Comparar senhas
         const isValid = await bcrypt.compare(password, user.password);
         
         if (!isValid) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
 
-        // Gerar token
         const token = jwt.sign(
             { id: user._id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Atualizar último login
         user.lastLogin = new Date();
         await user.save();
 
-        // Remover senha da resposta
         const userResponse = user.toObject();
         delete userResponse.password;
 
@@ -539,9 +441,7 @@ app.post('/api/auth/verify-email', async (req, res) => {
         });
         
         if (!user) {
-            return res.status(400).json({ 
-                error: 'Código inválido ou expirado' 
-            });
+            return res.status(400).json({ error: 'Código inválido ou expirado' });
         }
         
         user.emailVerified = true;
@@ -549,9 +449,7 @@ app.post('/api/auth/verify-email', async (req, res) => {
         user.verificationCodeExpires = undefined;
         await user.save();
         
-        res.json({ 
-            message: 'Email verificado com sucesso! Agora você pode fazer login.' 
-        });
+        res.json({ message: 'Email verificado com sucesso! Agora você pode fazer login.' });
     } catch (error) {
         console.error('❌ Erro na verificação:', error);
         res.status(500).json({ error: 'Erro interno do servidor' });
@@ -605,10 +503,7 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
             { new: true, runValidators: true }
         );
 
-        res.json({ 
-            user, 
-            message: 'Perfil atualizado com sucesso' 
-        });
+        res.json({ user, message: 'Perfil atualizado com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao atualizar perfil:', error);
         res.status(500).json({ error: 'Erro interno do servidor' });
@@ -618,15 +513,10 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
 // ========== ROTAS DE PONTOS DE COLETA ==========
 app.post('/api/points', authenticateToken, async (req, res) => {
     try {
-        const pointData = {
-            ...req.body,
-            userId: req.userId
-        };
+        const pointData = { ...req.body, userId: req.userId };
 
         if (!pointData.name || !pointData.address || !pointData.city || !pointData.state || !pointData.capacity) {
-            return res.status(400).json({ 
-                error: 'Campos obrigatórios: name, address, city, state, capacity' 
-            });
+            return res.status(400).json({ error: 'Campos obrigatórios: name, address, city, state, capacity' });
         }
 
         if (pointData.capacity) pointData.capacity = Number(pointData.capacity);
@@ -637,10 +527,7 @@ app.post('/api/points', authenticateToken, async (req, res) => {
         const point = new CollectionPoint(pointData);
         await point.save();
 
-        res.status(201).json({ 
-            point, 
-            message: 'Ponto de coleta criado com sucesso' 
-        });
+        res.status(201).json({ point, message: 'Ponto de coleta criado com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao criar ponto:', error);
         
@@ -658,7 +545,6 @@ app.get('/api/points', authenticateToken, async (req, res) => {
         const { status, city, wasteType } = req.query;
         
         const filter = { userId: req.userId };
-        
         if (status) filter.status = status;
         if (city) filter.city = city;
         if (wasteType) filter.wasteTypes = wasteType;
@@ -671,28 +557,17 @@ app.get('/api/points', authenticateToken, async (req, res) => {
     }
 });
 
-// ========== DELETAR PONTO DE COLETA ==========
 app.delete('/api/points/:id', authenticateToken, async (req, res) => {
     try {
         console.log('🗑️ Tentando deletar ponto ID:', req.params.id);
-        console.log('👤 Usuário ID:', req.userId);
         
-        const point = await CollectionPoint.findOneAndDelete({ 
-            _id: req.params.id, 
-            userId: req.userId 
-        });
+        const point = await CollectionPoint.findOneAndDelete({ _id: req.params.id, userId: req.userId });
         
         if (!point) {
-            console.log('❌ Ponto não encontrado ou não pertence ao usuário');
             return res.status(404).json({ error: 'Ponto não encontrado' });
         }
         
-        console.log('✅ Ponto deletado com sucesso:', point.name);
-        res.json({ 
-            message: 'Ponto deletado com sucesso',
-            deletedPoint: point 
-        });
-        
+        res.json({ message: 'Ponto deletado com sucesso', deletedPoint: point });
     } catch (error) {
         console.error('❌ Erro ao deletar ponto:', error);
         res.status(500).json({ error: 'Erro ao deletar ponto de coleta' });
@@ -714,27 +589,16 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
         
         await message.save();
         
-        // Notificar via socket
         const io = req.app.get('io');
         if (io) {
-            io.emit('new-message', {
-                ...message.toJSON(),
-                timestamp: new Date()
-            });
+            io.emit('new-message', { ...message.toJSON(), timestamp: new Date() });
         }
         
         if (recipient) {
-            await Notification.createMessageNotification(
-                recipient,
-                req.user.name,
-                content
-            );
+            await Notification.createMessageNotification(recipient, req.user.name, content);
         }
         
-        res.status(201).json({ 
-            message: 'Mensagem enviada com sucesso',
-            data: message
-        });
+        res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message });
     } catch (error) {
         console.error('❌ Erro ao enviar mensagem:', error);
         res.status(500).json({ error: 'Erro ao enviar mensagem' });
@@ -747,7 +611,6 @@ app.get('/api/messages/:room', authenticateToken, async (req, res) => {
         const { limit = 50, before } = req.query;
         
         const messages = await Message.getRoomHistory(room, parseInt(limit), before);
-        
         res.json(messages);
     } catch (error) {
         console.error('❌ Erro ao buscar mensagens:', error);
@@ -758,13 +621,8 @@ app.get('/api/messages/:room', authenticateToken, async (req, res) => {
 app.patch('/api/messages/:id/read', authenticateToken, async (req, res) => {
     try {
         const message = await Message.findById(req.params.id);
-        
-        if (!message) {
-            return res.status(404).json({ error: 'Mensagem não encontrada' });
-        }
-        
+        if (!message) return res.status(404).json({ error: 'Mensagem não encontrada' });
         await message.markAsRead(req.userId);
-        
         res.json({ message: 'Mensagem marcada como lida' });
     } catch (error) {
         console.error('❌ Erro ao marcar mensagem:', error);
@@ -776,27 +634,13 @@ app.patch('/api/messages/:id/read', authenticateToken, async (req, res) => {
 app.get('/api/notifications', authenticateToken, async (req, res) => {
     try {
         const { read, limit = 50 } = req.query;
-        
         const query = { user: req.userId };
+        if (read !== undefined) query.read = read === 'true';
         
-        if (read !== undefined) {
-            query.read = read === 'true';
-        }
+        const notifications = await Notification.find(query).sort({ createdAt: -1 }).limit(parseInt(limit));
+        const unreadCount = await Notification.countDocuments({ user: req.userId, read: false });
         
-        const notifications = await Notification.find(query)
-            .sort({ createdAt: -1 })
-            .limit(parseInt(limit));
-        
-        const unreadCount = await Notification.countDocuments({
-            user: req.userId,
-            read: false
-        });
-        
-        res.json({
-            notifications,
-            unreadCount,
-            total: notifications.length
-        });
+        res.json({ notifications, unreadCount, total: notifications.length });
     } catch (error) {
         console.error('❌ Erro ao buscar notificações:', error);
         res.status(500).json({ error: 'Erro ao buscar notificações' });
@@ -805,17 +649,9 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
     try {
-        const notification = await Notification.findOne({
-            _id: req.params.id,
-            user: req.userId
-        });
-        
-        if (!notification) {
-            return res.status(404).json({ error: 'Notificação não encontrada' });
-        }
-        
+        const notification = await Notification.findOne({ _id: req.params.id, user: req.userId });
+        if (!notification) return res.status(404).json({ error: 'Notificação não encontrada' });
         await notification.markAsRead();
-        
         res.json({ message: 'Notificação marcada como lida' });
     } catch (error) {
         console.error('❌ Erro ao marcar notificação:', error);
@@ -825,11 +661,7 @@ app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => 
 
 app.patch('/api/notifications/read-all', authenticateToken, async (req, res) => {
     try {
-        await Notification.updateMany(
-            { user: req.userId, read: false },
-            { read: true, readAt: new Date() }
-        );
-        
+        await Notification.updateMany({ user: req.userId, read: false }, { read: true, readAt: new Date() });
         res.json({ message: 'Todas as notificações foram marcadas como lidas' });
     } catch (error) {
         console.error('❌ Erro ao marcar todas notificações:', error);
@@ -839,15 +671,8 @@ app.patch('/api/notifications/read-all', authenticateToken, async (req, res) => 
 
 app.delete('/api/notifications/:id', authenticateToken, async (req, res) => {
     try {
-        const notification = await Notification.findOneAndDelete({
-            _id: req.params.id,
-            user: req.userId
-        });
-        
-        if (!notification) {
-            return res.status(404).json({ error: 'Notificação não encontrada' });
-        }
-        
+        const notification = await Notification.findOneAndDelete({ _id: req.params.id, user: req.userId });
+        if (!notification) return res.status(404).json({ error: 'Notificação não encontrada' });
         res.json({ message: 'Notificação removida com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao remover notificação:', error);
@@ -858,29 +683,16 @@ app.delete('/api/notifications/:id', authenticateToken, async (req, res) => {
 // ========== ROTAS DE ROTAS ==========
 app.post('/api/routes', authenticateToken, async (req, res) => {
     try {
-        const routeData = {
-            ...req.body,
-            userId: req.userId
-        };
-
+        const routeData = { ...req.body, userId: req.userId };
         const route = new Route(routeData);
         await route.save();
         
         await Notification.createRouteNotification(req.userId, route.name);
         
         const io = req.app.get('io');
-        if (io) {
-            io.emit('route-changed', {
-                type: 'new',
-                route,
-                timestamp: new Date()
-            });
-        }
+        if (io) io.emit('route-changed', { type: 'new', route, timestamp: new Date() });
 
-        res.status(201).json({ 
-            route, 
-            message: 'Rota criada com sucesso' 
-        });
+        res.status(201).json({ route, message: 'Rota criada com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao criar rota:', error);
         res.status(500).json({ error: 'Erro ao criar rota' });
@@ -890,9 +702,7 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
 app.get('/api/routes', authenticateToken, async (req, res) => {
     try {
         const { status, startDate, endDate } = req.query;
-        
         const filter = { userId: req.userId };
-        
         if (status) filter.status = status;
         if (startDate || endDate) {
             filter.date = {};
@@ -900,10 +710,7 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
             if (endDate) filter.date.$lte = new Date(endDate);
         }
         
-        const routes = await Route.find(filter)
-            .populate('points.pointId')
-            .sort({ date: -1 });
-            
+        const routes = await Route.find(filter).populate('points.pointId').sort({ date: -1 });
         res.json(routes);
     } catch (error) {
         console.error('❌ Erro ao listar rotas:', error);
@@ -914,19 +721,10 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
 // ========== ROTAS DE COLETAS ==========
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
-        const collectionData = {
-            ...req.body,
-            userId: req.userId
-        };
-
-        const point = await CollectionPoint.findOne({
-            _id: collectionData.collectionPointId,
-            userId: req.userId
-        });
+        const collectionData = { ...req.body, userId: req.userId };
+        const point = await CollectionPoint.findOne({ _id: collectionData.collectionPointId, userId: req.userId });
         
-        if (!point) {
-            return res.status(404).json({ error: 'Ponto de coleta não encontrado' });
-        }
+        if (!point) return res.status(404).json({ error: 'Ponto de coleta não encontrado' });
 
         const collection = new Collection(collectionData);
         await collection.save();
@@ -934,38 +732,19 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
         point.currentVolume += collectionData.wasteVolume;
         await point.save();
         
-        await Notification.createCollectionNotification(
-            req.userId,
-            point.name,
-            collectionData.wasteVolume
-        );
+        await Notification.createCollectionNotification(req.userId, point.name, collectionData.wasteVolume);
         
         const io = req.app.get('io');
-        if (io) {
-            io.emit('collection-update', {
-                pointId: point._id,
-                pointName: point.name,
-                volume: collectionData.wasteVolume,
-                timestamp: new Date()
-            });
-        }
+        if (io) io.emit('collection-update', { pointId: point._id, pointName: point.name, volume: collectionData.wasteVolume, timestamp: new Date() });
 
         if (collectionData.routeId) {
             await Route.updateOne(
                 { _id: collectionData.routeId, 'points.pointId': collectionData.collectionPointId },
-                { 
-                    $set: { 
-                        'points.$.actualVolume': collectionData.wasteVolume,
-                        'points.$.collectedAt': new Date()
-                    }
-                }
+                { $set: { 'points.$.actualVolume': collectionData.wasteVolume, 'points.$.collectedAt': new Date() } }
             );
         }
 
-        res.status(201).json({ 
-            collection, 
-            message: 'Coleta registrada com sucesso' 
-        });
+        res.status(201).json({ collection, message: 'Coleta registrada com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao registrar coleta:', error);
         res.status(500).json({ error: 'Erro ao registrar coleta' });
@@ -978,30 +757,12 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
         const [points, routes, collections, impact, unreadNotifications] = await Promise.all([
             CollectionPoint.countDocuments({ userId: req.userId }),
             Route.countDocuments({ userId: req.userId, status: 'COMPLETED' }),
-            Collection.find()
-                .populate({
-                    path: 'collectionPointId',
-                    match: { userId: req.userId }
-                }),
+            Collection.find().populate({ path: 'collectionPointId', match: { userId: req.userId } }),
             Collection.aggregate([
-                {
-                    $lookup: {
-                        from: 'collectionpoints',
-                        localField: 'collectionPointId',
-                        foreignField: '_id',
-                        as: 'point'
-                    }
-                },
+                { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
                 { $unwind: '$point' },
                 { $match: { 'point.userId': req.user._id } },
-                {
-                    $group: {
-                        _id: null,
-                        totalWaste: { $sum: '$wasteVolume' },
-                        avgCollection: { $avg: '$wasteVolume' },
-                        totalCollections: { $sum: 1 }
-                    }
-                }
+                { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' }, avgCollection: { $avg: '$wasteVolume' }, totalCollections: { $sum: 1 } } }
             ]),
             Notification.countDocuments({ user: req.userId, read: false })
         ]);
@@ -1016,18 +777,8 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
         const carbonSaved = totalWaste * 0.13;
 
         res.json({
-            points,
-            routes,
-            totalWaste,
-            avgCollection,
-            totalCollections,
-            unreadNotifications,
-            impact: {
-                treesSaved,
-                waterSaved: Math.floor(waterSaved),
-                energySaved: Math.floor(energySaved),
-                carbonSaved: Math.floor(carbonSaved)
-            }
+            points, routes, totalWaste, avgCollection, totalCollections, unreadNotifications,
+            impact: { treesSaved, waterSaved: Math.floor(waterSaved), energySaved: Math.floor(energySaved), carbonSaved: Math.floor(carbonSaved) }
         });
     } catch (error) {
         console.error('❌ Erro ao carregar stats:', error);
@@ -1039,22 +790,10 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
 app.get('/api/impact', authenticateToken, async (req, res) => {
     try {
         const result = await Collection.aggregate([
-            {
-                $lookup: {
-                    from: 'collectionpoints',
-                    localField: 'collectionPointId',
-                    foreignField: '_id',
-                    as: 'point'
-                }
-            },
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
             { $unwind: '$point' },
             { $match: { 'point.userId': req.user._id } },
-            {
-                $group: {
-                    _id: null,
-                    totalWaste: { $sum: '$wasteVolume' }
-                }
-            }
+            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
         ]);
 
         const totalWaste = result[0]?.totalWaste || 0;
@@ -1065,42 +804,23 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
         const carbonSaved = totalWaste * 0.13;
 
         const history = await Collection.aggregate([
-            {
-                $lookup: {
-                    from: 'collectionpoints',
-                    localField: 'collectionPointId',
-                    foreignField: '_id',
-                    as: 'point'
-                }
-            },
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
             { $unwind: '$point' },
             { $match: { 'point.userId': req.user._id } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
-                    waste: { $sum: '$wasteVolume' },
-                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
-                }
-            },
+            { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } }, waste: { $sum: '$wasteVolume' }, carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } } } },
             { $sort: { _id: 1 } },
             { $limit: 12 }
         ]);
 
-        res.json({
-            current: {
-                treesSaved,
-                waterSaved: Math.floor(waterSaved),
-                energySaved: Math.floor(energySaved),
-                carbonSaved: Math.floor(carbonSaved),
-                totalWaste
-            },
-            history
-        });
+        res.json({ current: { treesSaved, waterSaved: Math.floor(waterSaved), energySaved: Math.floor(energySaved), carbonSaved: Math.floor(carbonSaved), totalWaste }, history });
     } catch (error) {
         console.error('❌ Erro ao calcular impacto:', error);
         res.status(500).json({ error: 'Erro ao calcular impacto ambiental' });
     }
 });
+
+// ========== ROTAS DE IA ==========
+app.use('/api/ai', aiRoutes);
 
 // ========== ROTAS PÚBLICAS ==========
 app.get('/', (req, res) => {
@@ -1122,36 +842,16 @@ app.get('/', (req, res) => {
             pontos: {
                 listar: 'GET /api/points (auth)',
                 criar: 'POST /api/points (auth)',
-                buscar: 'GET /api/points/:id (auth)',
-                atualizar: 'PUT /api/points/:id (auth)',
                 deletar: 'DELETE /api/points/:id (auth)'
             },
             rotas: {
                 listar: 'GET /api/routes (auth)',
-                criar: 'POST /api/routes (auth)',
-                iniciar: 'PATCH /api/routes/:id/start (auth)',
-                completar: 'PATCH /api/routes/:id/complete (auth)'
+                criar: 'POST /api/routes (auth)'
             },
-            coletas: {
-                listar: 'GET /api/collections (auth)',
-                registrar: 'POST /api/collections (auth)'
-            },
-            mensagens: {
-                enviar: 'POST /api/messages (auth)',
-                listar: 'GET /api/messages/:room (auth)',
-                marcarLida: 'PATCH /api/messages/:id/read (auth)'
-            },
-            notificacoes: {
-                listar: 'GET /api/notifications (auth)',
-                marcarLida: 'PATCH /api/notifications/:id/read (auth)',
-                marcarTodas: 'PATCH /api/notifications/read-all (auth)',
-                deletar: 'DELETE /api/notifications/:id (auth)'
-            },
-            dashboard: {
-                stats: 'GET /api/dashboard/stats (auth)',
-                charts: 'GET /api/dashboard/charts (auth)'
-            },
-            impacto: 'GET /api/impact (auth)'
+            coletas: { registrar: 'POST /api/collections (auth)' },
+            dashboard: { stats: 'GET /api/dashboard/stats (auth)' },
+            impacto: 'GET /api/impact (auth)',
+            ai: { analise: 'POST /api/ai/analyze (upload image)' }
         },
         timestamp: new Date().toISOString()
     });
@@ -1182,29 +882,10 @@ app.get('/api/docs', (req, res) => {
             auth: {
                 'POST /api/auth/register': {
                     descricao: 'Registrar novo usuário',
-                    body: {
-                        name: 'string (obrigatório)',
-                        email: 'string (obrigatório)',
-                        password: 'string (obrigatório, min 6 caracteres)',
-                        phone: 'string (opcional)',
-                        city: 'string (opcional)',
-                        state: 'string (opcional)'
-                    }
+                    body: { name: 'string (obrigatório)', email: 'string (obrigatório)', password: 'string (obrigatório, min 6 caracteres)', phone: 'string (opcional)', city: 'string (opcional)', state: 'string (opcional)' }
                 },
-                'POST /api/auth/login': {
-                    descricao: 'Fazer login',
-                    body: {
-                        email: 'string (obrigatório)',
-                        password: 'string (obrigatório)'
-                    }
-                },
-                'POST /api/auth/verify-email': {
-                    descricao: 'Verificar email com código',
-                    body: {
-                        email: 'string (obrigatório)',
-                        code: 'string (obrigatório, 6 dígitos)'
-                    }
-                }
+                'POST /api/auth/login': { descricao: 'Fazer login', body: { email: 'string (obrigatório)', password: 'string (obrigatório)' } },
+                'POST /api/auth/verify-email': { descricao: 'Verificar email com código', body: { email: 'string (obrigatório)', code: 'string (obrigatório, 6 dígitos)' } }
             },
             notificacoes: {
                 'GET /api/notifications': 'Listar notificações do usuário',
@@ -1216,19 +897,14 @@ app.get('/api/docs', (req, res) => {
                 'POST /api/messages': 'Enviar mensagem',
                 'GET /api/messages/:room': 'Buscar histórico da sala',
                 'PATCH /api/messages/:id/read': 'Marcar mensagem como lida'
-            }
+            },
+            ai: { 'POST /api/ai/analyze': { descricao: 'Analisar imagem e detectar resíduos', auth: true, body: { image: 'file (multipart/form-data)' } } }
         },
         exemplos: {
             registrar: {
                 url: '/api/auth/register',
                 metodo: 'POST',
-                body: {
-                    name: 'Cooperativa Recicla',
-                    email: 'contato@recicla.com',
-                    password: '123456',
-                    city: 'São Paulo',
-                    state: 'SP'
-                }
+                body: { name: 'Cooperativa Recicla', email: 'contato@recicla.com', password: '123456', city: 'São Paulo', state: 'SP' }
             }
         }
     });
@@ -1248,17 +924,12 @@ app.use((err, req, res, next) => {
     console.error('❌ Erro global:', err.stack);
     
     const statusCode = err.statusCode || 500;
-    const message = isProduction 
-        ? 'Ocorreu um erro interno no servidor' 
-        : err.message;
+    const message = isProduction ? 'Ocorreu um erro interno no servidor' : err.message;
     
-    res.status(statusCode).json({ 
-        error: message,
-        ...(isProduction ? {} : { stack: err.stack })
-    });
+    res.status(statusCode).json({ error: message, ...(isProduction ? {} : { stack: err.stack }) });
 });
 
-// ========== INICIAR SERVIDOR HTTP (API + SOCKET.IO) ==========
+// ========== INICIAR SERVIDOR ==========
 server.listen(PORT, () => {
     console.log('\n=================================');
     console.log(`🚀 Servidor rodando na porta ${PORT}`);
@@ -1267,17 +938,14 @@ server.listen(PORT, () => {
     console.log(`🔌 Socket.IO disponível na mesma porta (${PORT})`);
     console.log(`📍 URL: http://localhost:${PORT}`);
     console.log(`📚 Documentação: http://localhost:${PORT}/api/docs`);
+    console.log(`🤖 IA Service: http://ai-service:5001`);
     console.log('=================================\n');
 });
 
 // ========== GRACEFUL SHUTDOWN ==========
 process.on('SIGTERM', async () => {
     console.log('\n👋 SIGTERM recebido, encerrando servidor...');
-    
-    server.close(() => {
-        console.log('💤 Servidor HTTP encerrado');
-    });
-    
+    server.close(() => console.log('💤 Servidor HTTP encerrado'));
     try {
         await mongoose.connection.close();
         console.log('💤 Conexão MongoDB encerrada');
@@ -1290,11 +958,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
     console.log('\n👋 SIGINT recebido, encerrando servidor...');
-    
-    server.close(() => {
-        console.log('💤 Servidor HTTP encerrado');
-    });
-    
+    server.close(() => console.log('💤 Servidor HTTP encerrado'));
     try {
         await mongoose.connection.close();
         console.log('💤 Conexão MongoDB encerrada');

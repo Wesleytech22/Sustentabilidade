@@ -10,6 +10,7 @@ import RoutesList from './Routes';
 import Impact from './Impact';
 import Chat from './Chat/Chat';
 import Notifications from './Notifications/Notifications';
+import AIAnalysis from './AIAnalysis';
 import './components.css';
 
 const Dashboard = () => {
@@ -39,6 +40,7 @@ const Dashboard = () => {
     if (path.includes('/impact')) return 'Impacto Ambiental';
     if (path.includes('/chat')) return 'Chat em Tempo Real';
     if (path.includes('/notifications')) return 'Notificações';
+    if (path.includes('/ai')) return 'Análise IA';
     return 'Dashboard';
   };
 
@@ -50,6 +52,7 @@ const Dashboard = () => {
     if (path.includes('/impact')) return 'fas fa-leaf';
     if (path.includes('/chat')) return 'fas fa-comments';
     if (path.includes('/notifications')) return 'fas fa-bell';
+    if (path.includes('/ai')) return 'fas fa-robot';
     return 'fas fa-chart-line';
   };
 
@@ -128,6 +131,7 @@ const Dashboard = () => {
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:room" element={<Chat />} />
             <Route path="/notifications" element={<Notifications />} />
+            <Route path="/ai" element={<AIAnalysis />} />
           </Routes>
         </div>
       </div>

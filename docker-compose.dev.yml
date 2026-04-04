@@ -39,6 +39,7 @@ services:
       timeout: 5s
       retries: 5
 
+  # ========== BACKEND NODE.JS ==========
   backend:
     build: 
       context: ./backend
@@ -63,6 +64,7 @@ services:
       - EMAIL_PASS=${EMAIL_PASS}
       - EMAIL_FROM=${EMAIL_FROM}
       - FRONTEND_URL=http://localhost:3001
+      - AI_SERVICE_URL=http://ai-service:5001
     env_file:
       - .env
     depends_on:
@@ -70,6 +72,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ai-service:
+        condition: service_started
     networks:
       - ecoroute-network-dev
     volumes:
@@ -77,6 +81,7 @@ services:
       - /app/node_modules
     command: npm run dev
 
+  # ========== FRONTEND REACT ==========
   frontend:
     build: 
       context: ./frontend
@@ -85,11 +90,14 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "3002:3000"  # Alternativa caso a 80 esteja ocupada
     environment:
       - REACT_APP_API_URL=http://localhost:3000/api
       - REACT_APP_SOCKET_URL=http://localhost:3001
+      - REACT_APP_AI_URL=http://localhost:5001
     depends_on:
       - backend
+      - ai-service
     networks:
       - ecoroute-network-dev
     volumes:
@@ -97,6 +105,7 @@ services:
       - /app/node_modules
     command: npm start
 
+  # ========== ADMINER (GERENCIADOR DE BANCO) ==========
   mongo-express:
     image: mongo-express:latest
     container_name: ecoroute-mongo-express-dev
@@ -114,6 +123,31 @@ services:
         condition: service_healthy
     networks:
       - ecoroute-network-dev
+
+  # ========== SERVIÇO DE IA (NOVO) ==========
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: ecoroute-ai-dev
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - FLASK_ENV=development
+      - MODEL_PATH=/app/models/garbage.pt
+    volumes:
+      - ./ai-service:/app
+      - ./ai-service/models:/app/models
+      - /app/__pycache__
+    networks:
+      - ecoroute-network-dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   mongodb_data_dev:

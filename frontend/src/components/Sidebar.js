@@ -89,14 +89,20 @@ const Sidebar = ({ user, onLogout, unreadCount, isConnected }) => {
             <span className="notification-badge">{unreadCount}</span>
           )}
         </NavLink>
+
+        {/* Análise IA */}
+        <NavLink to="/dashboard/ai" className={({ isActive }) => isActive ? 'active' : ''}>
+          <i className="fas fa-robot"></i>
+          <span>Análise IA</span>
+        </NavLink>
       </nav>
 
       <div className="sidebar-user">
         <div className="user-info">
-          <i className={getRoleIcon()}></i> {/* 👈 ÍCONE DINÂMICO */}
+          <i className={getRoleIcon()}></i>
           <div>
             <p className="user-name">{user?.name || 'Usuário'}</p>
-            <p className="user-role">{getRoleName()}</p> {/* 👈 PERFIL DINÂMICO */}
+            <p className="user-role">{getRoleName()}</p>
           </div>
         </div>
         <button className="btn-logout" onClick={onLogout} title="Sair">
