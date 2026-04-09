@@ -69,6 +69,11 @@ const Sidebar = ({ user, onLogout, unreadCount, isConnected }) => {
           <span>Impacto Ambiental</span>
         </NavLink>
 
+        <NavLink to="/dashboard/events" className={({ isActive }) => isActive ? 'active' : ''}>
+          <i className="fas fa-calendar-alt"></i>
+          <span>Eventos</span>
+        </NavLink>
+
         {/* Divisor */}
         <div className="nav-divider"></div>
 

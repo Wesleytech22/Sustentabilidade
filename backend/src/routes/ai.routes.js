@@ -8,7 +8,7 @@ const path = require('path');
 
 const upload = multer({ dest: 'uploads/' });
 
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://ai-service:5001';
+const AI_SERVICE_URL = 'http://localhost:5001';
 
 router.post('/analyze', upload.single('image'), async (req, res) => {
     try {

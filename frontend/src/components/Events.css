@@ -1,0 +1,120 @@
+.events-container {
+    padding: 20px;
+}
+
+.events-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.header-buttons {
+    display: flex;
+    gap: 12px;
+}
+
+.events-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    gap: 20px;
+}
+
+.event-card {
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    border: 1px solid rgba(0,0,0,0.05);
+    transition: all 0.3s;
+}
+
+.event-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(76, 175, 80, 0.15);
+    border-color: #4CAF50;
+}
+
+.event-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.event-icon {
+    font-size: 28px;
+}
+
+.event-header h3 {
+    flex: 1;
+    margin: 0;
+    font-size: 18px;
+    color: #333;
+}
+
+.event-description {
+    color: #666;
+    font-size: 14px;
+    margin-bottom: 16px;
+    line-height: 1.5;
+}
+
+.event-details {
+    margin-bottom: 16px;
+}
+
+.detail {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    color: #555;
+    font-size: 13px;
+}
+
+.detail i {
+    width: 20px;
+    color: #4CAF50;
+}
+
+.detail.highlight {
+    background: #e8f5e9;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-top: 8px;
+}
+
+.btn-finish {
+    width: 100%;
+    padding: 10px;
+    background: #ff9800;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.3s;
+}
+
+.btn-finish:hover {
+    background: #f57c00;
+    transform: translateY(-2px);
+}
+
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.status-badge.agendado { background: #e3f2fd; color: #2196F3; }
+.status-badge.em_andamento { background: #fff3e0; color: #ff9800; }
+.status-badge.finalizado { background: #e8f5e9; color: #4CAF50; }
+.status-badge.coleta_agendada { background: #e8f5e9; color: #4CAF50; }

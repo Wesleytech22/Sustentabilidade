@@ -19,6 +19,9 @@ const socketService = require('./services/socketService');
 // Importar rota de IA
 const aiRoutes = require('./src/routes/ai.routes');
 
+// Importar rota de Eventos
+const eventsRoutes = require('./src/routes/events.routes');
+
 // Carregar variáveis de ambiente
 dotenv.config();
 
@@ -822,6 +825,9 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
 // ========== ROTAS DE IA ==========
 app.use('/api/ai', aiRoutes);
 
+// ========== ROTAS DE EVENTOS ==========
+app.use('/api/events', eventsRoutes);
+
 // ========== ROTAS PÚBLICAS ==========
 app.get('/', (req, res) => {
     res.json({
@@ -851,7 +857,13 @@ app.get('/', (req, res) => {
             coletas: { registrar: 'POST /api/collections (auth)' },
             dashboard: { stats: 'GET /api/dashboard/stats (auth)' },
             impacto: 'GET /api/impact (auth)',
-            ai: { analise: 'POST /api/ai/analyze (upload image)' }
+            ai: { analise: 'POST /api/ai/analyze (upload image)' },
+            eventos: {
+                listar: 'GET /api/events (auth)',
+                criar: 'POST /api/events (auth)',
+                finalizar: 'POST /api/events/:id/finish (auth)',
+                gerarRotas: 'POST /api/events/generate-routes (auth)'
+            }
         },
         timestamp: new Date().toISOString()
     });
@@ -898,13 +910,24 @@ app.get('/api/docs', (req, res) => {
                 'GET /api/messages/:room': 'Buscar histórico da sala',
                 'PATCH /api/messages/:id/read': 'Marcar mensagem como lida'
             },
-            ai: { 'POST /api/ai/analyze': { descricao: 'Analisar imagem e detectar resíduos', auth: true, body: { image: 'file (multipart/form-data)' } } }
+            ai: { 'POST /api/ai/analyze': { descricao: 'Analisar imagem e detectar resíduos', auth: true, body: { image: 'file (multipart/form-data)' } } },
+            eventos: {
+                'POST /api/events': 'Criar evento',
+                'GET /api/events': 'Listar eventos',
+                'POST /api/events/:id/finish': 'Finalizar evento e agendar coleta',
+                'POST /api/events/generate-routes': 'Gerar rotas de coleta para eventos finalizados'
+            }
         },
         exemplos: {
             registrar: {
                 url: '/api/auth/register',
                 metodo: 'POST',
                 body: { name: 'Cooperativa Recicla', email: 'contato@recicla.com', password: '123456', city: 'São Paulo', state: 'SP' }
+            },
+            criarEvento: {
+                url: '/api/events',
+                metodo: 'POST',
+                body: { name: 'Show de Rock', type: 'show', address: 'Estádio do Morumbi', city: 'São Paulo', state: 'SP', startDate: '2026-05-01', endDate: '2026-05-01', expectedAttendees: 50000 }
             }
         }
     });
