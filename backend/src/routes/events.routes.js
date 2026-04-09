@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Event = require('../models/Events');
+const externalEventService = require('../../services/externalEventService');
 const jwt = require('jsonwebtoken');
 
 // ========== MESMO MIDDLEWARE DO APP.JS ==========
@@ -164,6 +165,144 @@ router.delete('/:id', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('❌ Erro ao deletar evento:', error);
         res.status(500).json({ error: 'Erro ao deletar evento' });
+    }
+});
+
+// ========== ROTAS DE INTEGRAÇÃO EXTERNA ==========
+
+// Buscar eventos de APIs externas (Ticketmaster)
+router.get('/external/search', authenticateToken, async (req, res) => {
+    try {
+        const { countryCode, city, keyword, classification, lat, long, radius } = req.query;
+        
+        let result;
+        
+        // Busca por localização
+        if (lat && long) {
+            result = await externalEventService.searchEventsByLocation({
+                lat: parseFloat(lat),
+                long: parseFloat(long),
+                radius: radius || '50km',
+                size: 50
+            });
+        }
+        // Busca por classificação (gênero musical)
+        else if (classification) {
+            result = await externalEventService.searchEventsByClassification({
+                classificationName: classification,
+                countryCode: countryCode || 'BR',
+                size: 50
+            });
+        }
+        // Busca normal
+        else {
+            result = await externalEventService.searchEvents({
+                countryCode: countryCode || 'BR',
+                city,
+                keyword,
+                size: 50
+            });
+        }
+        
+        if (!result.success) {
+            return res.status(500).json({ error: result.error });
+        }
+        
+        res.json({
+            success: true,
+            events: result.events,
+            totalPages: result.totalPages,
+            totalElements: result.totalElements,
+            source: 'ticketmaster'
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar eventos externos:', error);
+        res.status(500).json({ error: 'Erro ao buscar eventos externos' });
+    }
+});
+
+// Importar evento externo para o sistema
+router.post('/external/import/:eventId', authenticateToken, async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        
+        // Buscar evento externo
+        const externalEvent = await externalEventService.getEventById(eventId);
+        
+        if (!externalEvent) {
+            return res.status(404).json({ error: 'Evento não encontrado na API externa' });
+        }
+        
+        // Verificar se já foi importado
+        const existingEvent = await Event.findOne({ 
+            externalId: eventId, 
+            source: 'ticketmaster',
+            userId: req.userId 
+        });
+        
+        if (existingEvent) {
+            return res.status(400).json({ error: 'Evento já foi importado anteriormente' });
+        }
+        
+        // Criar evento no sistema
+        const event = new Event({
+            name: externalEvent.name,
+            description: externalEvent.description,
+            type: externalEvent.type,
+            address: externalEvent.address,
+            city: externalEvent.city,
+            state: externalEvent.state,
+            latitude: externalEvent.latitude,
+            longitude: externalEvent.longitude,
+            startDate: new Date(externalEvent.startDate),
+            endDate: new Date(externalEvent.endDate),
+            expectedAttendees: externalEvent.expectedAttendees,
+            estimatedWaste: externalEvent.estimatedWaste,
+            userId: req.userId,
+            status: 'agendado',
+            externalId: externalEvent.externalId,
+            source: externalEvent.source,
+            externalData: externalEvent  // Guardar dados originais
+        });
+        
+        await event.save();
+        
+        res.status(201).json({
+            success: true,
+            event,
+            message: `Evento "${event.name}" importado com sucesso!`
+        });
+    } catch (error) {
+        console.error('❌ Erro ao importar evento:', error);
+        res.status(500).json({ error: 'Erro ao importar evento' });
+    }
+});
+
+// Buscar eventos por classificação (ex: shows de rock)
+router.get('/external/classification/:name', authenticateToken, async (req, res) => {
+    try {
+        const { name } = req.params;
+        const { countryCode = 'BR' } = req.query;
+        
+        const result = await externalEventService.searchEventsByClassification({
+            classificationName: name,
+            countryCode,
+            size: 50
+        });
+        
+        if (!result.success) {
+            return res.status(500).json({ error: result.error });
+        }
+        
+        res.json({
+            success: true,
+            events: result.events,
+            classification: name,
+            total: result.events.length
+        });
+    } catch (error) {
+        console.error('❌ Erro:', error);
+        res.status(500).json({ error: 'Erro ao buscar eventos por classificação' });
     }
 });
 

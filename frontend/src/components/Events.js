@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import ExternalEventSearch from '../components/ExternalEventSearch';
 
 const Events = () => {
     const { api } = useAuth();
@@ -28,10 +29,12 @@ const Events = () => {
         setLoading(true);
         try {
             const response = await api.get('/events');
-            setEvents(response.data);
+            // Garantir que response.data é um array
+            setEvents(Array.isArray(response.data) ? response.data : response.data.events || []);
         } catch (error) {
             console.error('Erro ao carregar eventos:', error);
             setError('Erro ao carregar eventos');
+            setEvents([]);
         } finally {
             setLoading(false);
         }
@@ -46,6 +49,13 @@ const Events = () => {
             // Validar campos obrigatórios
             if (!formData.name || !formData.address || !formData.city || !formData.state || !formData.startDate || !formData.endDate || !formData.expectedAttendees) {
                 setError('Preencha todos os campos obrigatórios');
+                setSaving(false);
+                return;
+            }
+
+            // Validar datas
+            if (new Date(formData.startDate) > new Date(formData.endDate)) {
+                setError('Data de início não pode ser maior que data de fim');
                 setSaving(false);
                 return;
             }
@@ -70,23 +80,25 @@ const Events = () => {
     };
 
     const handleFinish = async (id) => {
+        if (!window.confirm('Confirmar finalização do evento?')) return;
+        
         try {
             await api.post(`/events/${id}/finish`);
             loadEvents();
         } catch (error) {
             console.error('Erro ao finalizar evento:', error);
-            setError('Erro ao finalizar evento');
+            setError(error.response?.data?.error || 'Erro ao finalizar evento');
         }
     };
 
     const generateRoutes = async () => {
         try {
             const response = await api.post('/events/generate-routes');
-            alert(`✅ Rota criada para ${response.data.eventsCount} eventos!`);
+            alert(`✅ ${response.data.message || `Rota criada para ${response.data.eventsCount} eventos!`}`);
             loadEvents();
         } catch (error) {
             console.error('Erro ao gerar rotas:', error);
-            setError('Erro ao gerar rotas');
+            setError(error.response?.data?.error || 'Erro ao gerar rotas');
         }
     };
 
@@ -126,6 +138,7 @@ const Events = () => {
             <div className="events-header">
                 <h2><i className="fas fa-calendar-alt"></i> Eventos e Coleta Programada</h2>
                 <div className="header-buttons">
+                    <ExternalEventSearch onEventImported={loadEvents} />
                     <button className="btn-primary" onClick={() => setShowModal(true)}>
                         <i className="fas fa-plus"></i> Novo Evento
                     </button>
@@ -139,6 +152,7 @@ const Events = () => {
                 <div className="alert alert-error">
                     <i className="fas fa-exclamation-circle"></i>
                     {error}
+                    <button className="alert-close" onClick={() => setError('')}>×</button>
                 </div>
             )}
 
@@ -148,7 +162,7 @@ const Events = () => {
                         <i className="fas fa-calendar-alt"></i>
                     </div>
                     <h3>Nenhum evento cadastrado</h3>
-                    <p>Clique em "Novo Evento" para começar</p>
+                    <p>Clique em "Novo Evento" para começar ou busque eventos externos</p>
                 </div>
             ) : (
                 <div className="events-grid">
@@ -157,10 +171,21 @@ const Events = () => {
                             <div className="event-header">
                                 <span className="event-icon">{getTypeIcon(event.type)}</span>
                                 <h3>{event.name}</h3>
+                                {event.source === 'ticketmaster' && (
+                                    <span className="source-badge" title="Importado da Ticketmaster">
+                                        🎫
+                                    </span>
+                                )}
                                 <span className={`status-badge ${event.status}`}>
                                     {getStatusText(event.status)}
                                 </span>
                             </div>
+                            
+                            {event.venueName && (
+                                <p className="event-venue">
+                                    <i className="fas fa-building"></i> {event.venueName}
+                                </p>
+                            )}
                             
                             <p className="event-description">{event.description || 'Sem descrição'}</p>
                             
@@ -175,12 +200,18 @@ const Events = () => {
                                 </div>
                                 <div className="detail">
                                     <i className="fas fa-users"></i>
-                                    <span>{event.expectedAttendees} pessoas</span>
+                                    <span>{event.expectedAttendees.toLocaleString()} pessoas</span>
                                 </div>
                                 <div className="detail">
                                     <i className="fas fa-trash-alt"></i>
-                                    <span>Estimativa: {event.estimatedWaste} kg</span>
+                                    <span>Estimativa: {event.estimatedWaste?.toLocaleString() || 0} kg</span>
                                 </div>
+                                {event.wasteCollected > 0 && (
+                                    <div className="detail success">
+                                        <i className="fas fa-recycle"></i>
+                                        <span>Coletado: {event.wasteCollected} kg</span>
+                                    </div>
+                                )}
                                 {event.scheduledCollectionDate && (
                                     <div className="detail highlight">
                                         <i className="fas fa-truck"></i>
@@ -199,7 +230,7 @@ const Events = () => {
                 </div>
             )}
 
-            {/* Modal de Criação - COM ESPAÇAMENTO CORRIGIDO */}
+            {/* Modal de Criação */}
             {showModal && (
                 <div className="modal-overlay" onClick={() => setShowModal(false)}>
                     <div className="modal-content" onClick={e => e.stopPropagation()}>
@@ -308,7 +339,7 @@ const Events = () => {
                                             name="state"
                                             maxLength="2"
                                             value={formData.state}
-                                            onChange={(e) => setFormData({...formData, state: e.target.value})}
+                                            onChange={(e) => setFormData({...formData, state: e.target.value.toUpperCase()})}
                                             placeholder="SP"
                                             required
                                             disabled={saving}
