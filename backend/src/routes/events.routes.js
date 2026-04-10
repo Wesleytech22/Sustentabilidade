@@ -3,6 +3,7 @@ const router = express.Router();
 const Event = require('../models/Events');
 const externalEventService = require('../../services/externalEventService');
 const jwt = require('jsonwebtoken');
+// NÃO importe Route aqui - será acessado via app.js
 
 // ========== MESMO MIDDLEWARE DO APP.JS ==========
 const authenticateToken = async (req, res, next) => {
@@ -46,7 +47,6 @@ router.get('/', authenticateToken, async (req, res) => {
         
         const events = await Event.find(filter).sort({ startDate: -1 });
         
-        // Garantir que retorna um array mesmo vazio
         res.json(events || []);
     } catch (error) {
         console.error('❌ Erro ao listar eventos:', error);
@@ -62,7 +62,6 @@ router.post('/', authenticateToken, async (req, res) => {
             startDate, endDate, expectedAttendees, estimatedWaste
         } = req.body;
 
-        // Validações
         if (!name || !address || !city || !state || !startDate || !endDate || !expectedAttendees) {
             return res.status(400).json({ 
                 error: 'Campos obrigatórios: name, address, city, state, startDate, endDate, expectedAttendees' 
@@ -79,7 +78,7 @@ router.post('/', authenticateToken, async (req, res) => {
             startDate: new Date(startDate),
             endDate: new Date(endDate),
             expectedAttendees: Number(expectedAttendees),
-            estimatedWaste: estimatedWaste ? Number(estimatedWaste) : Math.floor(Number(expectedAttendees) * 0.5), // 0.5kg por pessoa
+            estimatedWaste: estimatedWaste ? Number(estimatedWaste) : Math.floor(Number(expectedAttendees) * 0.5),
             wasteCollected: 0,
             userId: req.userId,
             status: 'agendado'
@@ -126,29 +125,72 @@ router.post('/:id/finish', authenticateToken, async (req, res) => {
     }
 });
 
-// POST /api/events/generate-routes - Gerar rotas
+// POST /api/events/generate-routes - VERSÃO SIMPLIFICADA PARA TESTE
+// POST /api/events/generate-routes - VERSÃO COMPLETA
 router.post('/generate-routes', authenticateToken, async (req, res) => {
     try {
+        console.log('🔍 Buscando eventos finalizados...');
+        
         const finishedEvents = await Event.find({ 
             userId: req.userId, 
             status: 'finalizado' 
         });
         
-        // Atualizar status para coleta_agendada
+        console.log(`📊 Encontrados ${finishedEvents.length} eventos finalizados`);
+        
+        if (finishedEvents.length === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Nenhum evento finalizado aguardando coleta',
+                eventsCount: 0
+            });
+        }
+        
+        // Importar o modelo Route
+        const Route = require('../models/Route');
+        
+        // Criar a rota
+        const newRoute = new Route({
+            name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
+            description: `Rota gerada automaticamente para coleta de resíduos de ${finishedEvents.length} evento(s)`,
+            date: new Date(),
+            points: finishedEvents.map((event, index) => ({
+                pointId: event._id,
+                order: index + 1,
+                estimatedVolume: event.estimatedWaste || 500,
+                distance: 0,
+                duration: 0
+            })),
+            totalDistance: 0,
+            totalWaste: finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || 0), 0),
+            fuelConsumption: 0,
+            carbonFootprint: 0,
+            vehicleType: 'truck',
+            status: 'PLANNED',
+            userId: req.userId
+        });
+        
+        await newRoute.save();
+        console.log(`✅ Rota criada com ID: ${newRoute._id}`);
+        
+        // Atualizar eventos
         for (const event of finishedEvents) {
             event.status = 'coleta_agendada';
-            event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // +7 dias
+            event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+            event.routeId = newRoute._id;
             await event.save();
         }
         
         res.json({ 
             success: true, 
+            route: newRoute,
             eventsCount: finishedEvents.length,
-            message: `${finishedEvents.length} eventos prontos para coleta` 
+            message: `${finishedEvents.length} eventos prontos para coleta. Rota criada com sucesso!` 
         });
+        
     } catch (error) {
-        console.error('❌ Erro ao gerar rotas:', error);
-        res.status(500).json({ error: 'Erro ao gerar rotas' });
+        console.error('❌ Erro detalhado ao gerar rotas:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -177,7 +219,6 @@ router.get('/external/search', authenticateToken, async (req, res) => {
         
         let result;
         
-        // Busca por localização
         if (lat && long) {
             result = await externalEventService.searchEventsByLocation({
                 lat: parseFloat(lat),
@@ -186,7 +227,6 @@ router.get('/external/search', authenticateToken, async (req, res) => {
                 size: 50
             });
         }
-        // Busca por classificação (gênero musical)
         else if (classification) {
             result = await externalEventService.searchEventsByClassification({
                 classificationName: classification,
@@ -194,7 +234,6 @@ router.get('/external/search', authenticateToken, async (req, res) => {
                 size: 50
             });
         }
-        // Busca normal
         else {
             result = await externalEventService.searchEvents({
                 countryCode: countryCode || 'BR',
@@ -226,14 +265,12 @@ router.post('/external/import/:eventId', authenticateToken, async (req, res) => 
     try {
         const { eventId } = req.params;
         
-        // Buscar evento externo
         const externalEvent = await externalEventService.getEventById(eventId);
         
         if (!externalEvent) {
             return res.status(404).json({ error: 'Evento não encontrado na API externa' });
         }
         
-        // Verificar se já foi importado
         const existingEvent = await Event.findOne({ 
             externalId: eventId, 
             source: 'ticketmaster',
@@ -244,7 +281,6 @@ router.post('/external/import/:eventId', authenticateToken, async (req, res) => 
             return res.status(400).json({ error: 'Evento já foi importado anteriormente' });
         }
         
-        // Criar evento no sistema
         const event = new Event({
             name: externalEvent.name,
             description: externalEvent.description,
@@ -262,7 +298,7 @@ router.post('/external/import/:eventId', authenticateToken, async (req, res) => 
             status: 'agendado',
             externalId: externalEvent.externalId,
             source: externalEvent.source,
-            externalData: externalEvent  // Guardar dados originais
+            externalData: externalEvent
         });
         
         await event.save();
@@ -278,7 +314,7 @@ router.post('/external/import/:eventId', authenticateToken, async (req, res) => 
     }
 });
 
-// Buscar eventos por classificação (ex: shows de rock)
+// Buscar eventos por classificação
 router.get('/external/classification/:name', authenticateToken, async (req, res) => {
     try {
         const { name } = req.params;

@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import ExternalEventSearch from '../components/ExternalEventSearch';
 
 const Events = () => {
     const { api } = useAuth();
+    const navigate = useNavigate();
     const [events, setEvents] = useState([]);
     const [showModal, setShowModal] = useState(false);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [generating, setGenerating] = useState(false);
+    const [showConfirmModal, setShowConfirmModal] = useState(false);
+    const [finishedEvents, setFinishedEvents] = useState([]);
     const [error, setError] = useState('');
     const [formData, setFormData] = useState({
         name: '',
@@ -29,7 +33,6 @@ const Events = () => {
         setLoading(true);
         try {
             const response = await api.get('/events');
-            // Garantir que response.data é um array
             setEvents(Array.isArray(response.data) ? response.data : response.data.events || []);
         } catch (error) {
             console.error('Erro ao carregar eventos:', error);
@@ -46,14 +49,12 @@ const Events = () => {
         setError('');
         
         try {
-            // Validar campos obrigatórios
             if (!formData.name || !formData.address || !formData.city || !formData.state || !formData.startDate || !formData.endDate || !formData.expectedAttendees) {
                 setError('Preencha todos os campos obrigatórios');
                 setSaving(false);
                 return;
             }
 
-            // Validar datas
             if (new Date(formData.startDate) > new Date(formData.endDate)) {
                 setError('Data de início não pode ser maior que data de fim');
                 setSaving(false);
@@ -66,7 +67,6 @@ const Events = () => {
             setShowModal(false);
             loadEvents();
             
-            // Limpar formulário
             setFormData({
                 name: '', description: '', type: 'outro', address: '',
                 city: '', state: '', startDate: '', endDate: '', expectedAttendees: ''
@@ -80,25 +80,87 @@ const Events = () => {
     };
 
     const handleFinish = async (id) => {
-        if (!window.confirm('Confirmar finalização do evento?')) return;
+        if (!window.confirm('Confirmar finalização do evento? Após finalizado, poderá ser incluído na rota de coleta.')) return;
         
         try {
             await api.post(`/events/${id}/finish`);
             loadEvents();
+            showToast('Evento finalizado e coleta agendada!', 'success');
         } catch (error) {
             console.error('Erro ao finalizar evento:', error);
             setError(error.response?.data?.error || 'Erro ao finalizar evento');
         }
     };
 
-    const generateRoutes = async () => {
+    const showToast = (message, type = 'success') => {
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `<i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i> ${message}`;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    };
+
+    const openGenerateRoutesModal = () => {
+        const finished = events.filter(event => event.status === 'finalizado');
+        
+        if (finished.length === 0) {
+            showToast('Nenhum evento finalizado aguardando coleta!', 'error');
+            return;
+        }
+        
+        setFinishedEvents(finished);
+        setShowConfirmModal(true);
+    };
+
+    // FUNÇÃO CORRIGIDA: GERAR ROTAS E REDIRECIONAR
+    const handleGenerateRoutes = async () => {
+        setGenerating(true);
+        
         try {
+            console.log('🔍 Enviando requisição para gerar rota...');
+            
             const response = await api.post('/events/generate-routes');
-            alert(`✅ ${response.data.message || `Rota criada para ${response.data.eventsCount} eventos!`}`);
-            loadEvents();
+            
+            console.log('📦 Resposta da API:', response.data);
+            
+            // Verificar se a requisição foi bem sucedida
+            if (response.data && response.data.success) {
+                showToast(response.data.message || 'Rotas geradas com sucesso!', 'success');
+                
+                setShowConfirmModal(false);
+                await loadEvents();
+                
+                // Redirecionar para a tela de rotas se houver eventos processados
+                if (response.data.eventsCount > 0 || response.data.route) {
+                    setTimeout(() => {
+                        navigate('/dashboard/routes');
+                    }, 1500);
+                }
+            } else {
+                showToast(response.data?.message || 'Erro ao gerar rotas', 'error');
+            }
+            
         } catch (error) {
-            console.error('Erro ao gerar rotas:', error);
-            setError(error.response?.data?.error || 'Erro ao gerar rotas');
+            console.error('❌ Erro detalhado ao gerar rotas:');
+            console.error('Status:', error.response?.status);
+            console.error('Mensagem:', error.response?.data?.message || error.response?.data?.error);
+            
+            let errorMsg = 'Erro ao gerar rotas. ';
+            
+            if (error.response?.status === 401) {
+                errorMsg = 'Sessão expirada. Faça login novamente.';
+                navigate('/login');
+            } else if (error.response?.status === 404) {
+                errorMsg = 'Nenhum evento finalizado encontrado.';
+            } else if (error.response?.status === 500) {
+                errorMsg = 'Erro no servidor. Tente novamente mais tarde.';
+            } else {
+                errorMsg += error.response?.data?.message || error.response?.data?.error || 'Tente novamente.';
+            }
+            
+            showToast(errorMsg, 'error');
+        } finally {
+            setGenerating(false);
         }
     };
 
@@ -138,12 +200,19 @@ const Events = () => {
             <div className="events-header">
                 <h2><i className="fas fa-calendar-alt"></i> Eventos e Coleta Programada</h2>
                 <div className="header-buttons">
-                    <ExternalEventSearch onEventImported={loadEvents} />
                     <button className="btn-primary" onClick={() => setShowModal(true)}>
                         <i className="fas fa-plus"></i> Novo Evento
                     </button>
-                    <button className="btn-secondary" onClick={generateRoutes}>
-                        <i className="fas fa-route"></i> Gerar Rotas de Coleta
+                    <button 
+                        className="btn-generate" 
+                        onClick={openGenerateRoutesModal}
+                        disabled={generating}
+                    >
+                        {generating ? (
+                            <><i className="fas fa-spinner fa-spin"></i> Gerando...</>
+                        ) : (
+                            <><i className="fas fa-route"></i> Gerar Rotas de Coleta</>
+                        )}
                     </button>
                 </div>
             </div>
@@ -162,7 +231,7 @@ const Events = () => {
                         <i className="fas fa-calendar-alt"></i>
                     </div>
                     <h3>Nenhum evento cadastrado</h3>
-                    <p>Clique em "Novo Evento" para começar ou busque eventos externos</p>
+                    <p>Clique em "Novo Evento" para começar</p>
                 </div>
             ) : (
                 <div className="events-grid">
@@ -171,21 +240,10 @@ const Events = () => {
                             <div className="event-header">
                                 <span className="event-icon">{getTypeIcon(event.type)}</span>
                                 <h3>{event.name}</h3>
-                                {event.source === 'ticketmaster' && (
-                                    <span className="source-badge" title="Importado da Ticketmaster">
-                                        🎫
-                                    </span>
-                                )}
                                 <span className={`status-badge ${event.status}`}>
                                     {getStatusText(event.status)}
                                 </span>
                             </div>
-                            
-                            {event.venueName && (
-                                <p className="event-venue">
-                                    <i className="fas fa-building"></i> {event.venueName}
-                                </p>
-                            )}
                             
                             <p className="event-description">{event.description || 'Sem descrição'}</p>
                             
@@ -200,18 +258,12 @@ const Events = () => {
                                 </div>
                                 <div className="detail">
                                     <i className="fas fa-users"></i>
-                                    <span>{event.expectedAttendees.toLocaleString()} pessoas</span>
+                                    <span>{event.expectedAttendees?.toLocaleString() || 0} pessoas</span>
                                 </div>
                                 <div className="detail">
                                     <i className="fas fa-trash-alt"></i>
                                     <span>Estimativa: {event.estimatedWaste?.toLocaleString() || 0} kg</span>
                                 </div>
-                                {event.wasteCollected > 0 && (
-                                    <div className="detail success">
-                                        <i className="fas fa-recycle"></i>
-                                        <span>Coletado: {event.wasteCollected} kg</span>
-                                    </div>
-                                )}
                                 {event.scheduledCollectionDate && (
                                     <div className="detail highlight">
                                         <i className="fas fa-truck"></i>
@@ -227,6 +279,50 @@ const Events = () => {
                             )}
                         </div>
                     ))}
+                </div>
+            )}
+
+            {/* Modal de Confirmação */}
+            {showConfirmModal && (
+                <div className="modal-overlay" onClick={() => setShowConfirmModal(false)}>
+                    <div className="modal-content confirm-modal" onClick={e => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <h2>Confirmar Geração de Rotas</h2>
+                            <button className="close" onClick={() => setShowConfirmModal(false)}>&times;</button>
+                        </div>
+                        <div className="modal-body">
+                            <p><strong>Eventos finalizados aguardando coleta:</strong></p>
+                            <div className="finished-events-list">
+                                {finishedEvents.map(event => (
+                                    <div key={event._id} className="finished-event-item">
+                                        <span className="event-icon">{getTypeIcon(event.type)}</span>
+                                        <div className="event-info">
+                                            <strong>{event.name}</strong>
+                                            <span>{event.address}, {event.city}</span>
+                                            <span>Estimativa: {event.estimatedWaste?.toLocaleString() || 0} kg</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            <p className="confirm-message">
+                                <i className="fas fa-info-circle"></i>
+                                Será criada uma rota otimizada para coletar todos estes eventos.
+                                Deseja continuar?
+                            </p>
+                        </div>
+                        <div className="modal-actions">
+                            <button className="btn-secondary" onClick={() => setShowConfirmModal(false)}>
+                                Cancelar
+                            </button>
+                            <button className="btn-primary" onClick={handleGenerateRoutes} disabled={generating}>
+                                {generating ? (
+                                    <><i className="fas fa-spinner fa-spin"></i> Gerando...</>
+                                ) : (
+                                    <><i className="fas fa-route"></i> Gerar Rota</>
+                                )}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
 
@@ -247,9 +343,7 @@ const Events = () => {
                                         name="name"
                                         value={formData.name}
                                         onChange={(e) => setFormData({...formData, name: e.target.value})}
-                                        placeholder="Ex: Show de Rock"
                                         required
-                                        disabled={saving}
                                     />
                                 </div>
                                 
@@ -259,7 +353,6 @@ const Events = () => {
                                         name="type"
                                         value={formData.type}
                                         onChange={(e) => setFormData({...formData, type: e.target.value})}
-                                        disabled={saving}
                                     >
                                         <option value="show">🎤 Show/Concerto</option>
                                         <option value="festa">🎉 Festa</option>
@@ -276,8 +369,6 @@ const Events = () => {
                                         name="description"
                                         value={formData.description}
                                         onChange={(e) => setFormData({...formData, description: e.target.value})}
-                                        placeholder="Descrição opcional do evento"
-                                        disabled={saving}
                                     />
                                 </div>
                                 
@@ -290,7 +381,6 @@ const Events = () => {
                                             value={formData.startDate}
                                             onChange={(e) => setFormData({...formData, startDate: e.target.value})}
                                             required
-                                            disabled={saving}
                                         />
                                     </div>
                                     <div className="form-group">
@@ -301,7 +391,6 @@ const Events = () => {
                                             value={formData.endDate}
                                             onChange={(e) => setFormData({...formData, endDate: e.target.value})}
                                             required
-                                            disabled={saving}
                                         />
                                     </div>
                                 </div>
@@ -313,9 +402,7 @@ const Events = () => {
                                         name="address"
                                         value={formData.address}
                                         onChange={(e) => setFormData({...formData, address: e.target.value})}
-                                        placeholder="Ex: Av. Paulista, 1000"
                                         required
-                                        disabled={saving}
                                     />
                                 </div>
                                 
@@ -327,9 +414,7 @@ const Events = () => {
                                             name="city"
                                             value={formData.city}
                                             onChange={(e) => setFormData({...formData, city: e.target.value})}
-                                            placeholder="São Paulo"
                                             required
-                                            disabled={saving}
                                         />
                                     </div>
                                     <div className="form-group">
@@ -340,9 +425,7 @@ const Events = () => {
                                             maxLength="2"
                                             value={formData.state}
                                             onChange={(e) => setFormData({...formData, state: e.target.value.toUpperCase()})}
-                                            placeholder="SP"
                                             required
-                                            disabled={saving}
                                         />
                                     </div>
                                 </div>
@@ -354,9 +437,7 @@ const Events = () => {
                                         name="expectedAttendees"
                                         value={formData.expectedAttendees}
                                         onChange={(e) => setFormData({...formData, expectedAttendees: e.target.value})}
-                                        placeholder="5000"
                                         required
-                                        disabled={saving}
                                     />
                                 </div>
 
