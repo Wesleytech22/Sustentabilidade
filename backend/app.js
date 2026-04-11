@@ -252,7 +252,20 @@ const routeSchema = new mongoose.Schema({
     carbonFootprint: { type: Number, default: 0 },
     vehicleType: { type: String, default: 'truck' },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    completedAt: Date
+    completedAt: Date,
+    // NOVOS CAMPOS ADICIONADOS PARA INFORMAÇÕES DE EVENTOS
+    eventsSummary: [{
+        eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
+        eventName: String,
+        eventDate: Date,
+        wasteCollected: Number
+    }],
+    eventInfo: {
+        eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
+        eventName: String,
+        eventDate: Date,
+        eventLocation: String
+    }
 }, { timestamps: true });
 
 const collectionSchema = new mongoose.Schema({
@@ -721,6 +734,142 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
     }
 });
 
+// ========== NOVO ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS FINALIZADOS ==========
+app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
+    try {
+        console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
+        
+        // Importar o modelo de Eventos
+        const Event = require('./src/models/Events');
+        
+        // Buscar eventos do usuário com status 'finalizado'
+        const finishedEvents = await Event.find({ 
+            userId: req.userId, 
+            status: 'finalizado' 
+        });
+        
+        console.log(`📊 Encontrados ${finishedEvents.length} eventos finalizados`);
+        
+        if (finishedEvents.length === 0) {
+            return res.status(404).json({ 
+                error: 'Nenhum evento finalizado encontrado para gerar rota',
+                message: 'Finalize um evento primeiro antes de criar uma rota'
+            });
+        }
+        
+        // Calcular total de resíduos
+        const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || e.wasteCollected || 0), 0);
+        
+        // Criar a rota
+        const newRoute = new Route({
+            name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
+            description: `Rota gerada automaticamente para coleta de resíduos de ${finishedEvents.length} evento(s)`,
+            date: new Date(),
+            points: finishedEvents.map((event, index) => ({
+                pointId: event._id,
+                order: index + 1,
+                estimatedVolume: event.estimatedWaste || event.wasteCollected || 500,
+                distance: 0,
+                duration: 0
+            })),
+            totalDistance: 0,
+            totalWaste: totalWaste,
+            fuelConsumption: 0,
+            carbonFootprint: 0,
+            vehicleType: 'truck',
+            status: 'PLANNED',
+            userId: req.userId,
+            eventsSummary: finishedEvents.map(event => ({
+                eventId: event._id,
+                eventName: event.name,
+                eventDate: event.startDate || event.date,
+                wasteCollected: event.estimatedWaste || event.wasteCollected || 0
+            })),
+            eventInfo: {
+                eventId: finishedEvents[0]._id,
+                eventName: finishedEvents[0].name,
+                eventDate: finishedEvents[0].startDate || finishedEvents[0].date,
+                eventLocation: finishedEvents[0].city || finishedEvents[0].location || 'Local não informado'
+            }
+        });
+        
+        await newRoute.save();
+        console.log(`✅ Rota criada com sucesso! ID: ${newRoute._id}`);
+        console.log(`📊 Total de resíduos: ${totalWaste} kg`);
+        console.log(`📋 Eventos incluídos: ${finishedEvents.length}`);
+        
+        // Atualizar os eventos marcando que têm coleta agendada
+        for (const event of finishedEvents) {
+            event.status = 'coleta_agendada';
+            event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+            event.routeId = newRoute._id;
+            await event.save();
+            console.log(`✅ Evento atualizado: ${event.name} -> coleta_agendada`);
+        }
+        
+        // Criar notificação
+        await Notification.createRouteNotification(req.userId, newRoute.name);
+        
+        // Emitir via socket
+        const io = req.app.get('io');
+        if (io) io.emit('route-changed', { type: 'new', route: newRoute, timestamp: new Date() });
+        
+        res.status(201).json(newRoute);
+        
+    } catch (error) {
+        console.error('❌ Erro ao gerar rota a partir de eventos:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// PUT - Atualizar rota
+app.put('/api/routes/:id', authenticateToken, async (req, res) => {
+    try {
+        const { name, status } = req.body;
+        const route = await Route.findById(req.params.id);
+        
+        if (!route) {
+            return res.status(404).json({ error: 'Rota não encontrada' });
+        }
+        
+        if (route.userId.toString() !== req.userId) {
+            return res.status(403).json({ error: 'Acesso não autorizado' });
+        }
+        
+        if (name) route.name = name;
+        if (status) route.status = status;
+        
+        await route.save();
+        console.log(`✅ Rota atualizada: ${route.name}`);
+        res.json(route);
+    } catch (error) {
+        console.error('❌ Erro ao atualizar rota:', error);
+        res.status(500).json({ error: 'Erro ao atualizar rota' });
+    }
+});
+
+// DELETE - Remover rota
+app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
+    try {
+        const route = await Route.findById(req.params.id);
+        
+        if (!route) {
+            return res.status(404).json({ error: 'Rota não encontrada' });
+        }
+        
+        if (route.userId.toString() !== req.userId) {
+            return res.status(403).json({ error: 'Acesso não autorizado' });
+        }
+        
+        await route.deleteOne();
+        console.log(`🗑️ Rota removida: ${route.name}`);
+        res.json({ message: 'Rota removida com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao deletar rota:', error);
+        res.status(500).json({ error: 'Erro ao deletar rota' });
+    }
+});
+
 // ========== ROTAS DE COLETAS ==========
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
@@ -852,7 +1001,8 @@ app.get('/', (req, res) => {
             },
             rotas: {
                 listar: 'GET /api/routes (auth)',
-                criar: 'POST /api/routes (auth)'
+                criar: 'POST /api/routes (auth)',
+                gerarRotas: 'POST /api/routes/generate-from-events (auth)'
             },
             coletas: { registrar: 'POST /api/collections (auth)' },
             dashboard: { stats: 'GET /api/dashboard/stats (auth)' },
@@ -916,6 +1066,13 @@ app.get('/api/docs', (req, res) => {
                 'GET /api/events': 'Listar eventos',
                 'POST /api/events/:id/finish': 'Finalizar evento e agendar coleta',
                 'POST /api/events/generate-routes': 'Gerar rotas de coleta para eventos finalizados'
+            },
+            rotas: {
+                'GET /api/routes': 'Listar rotas',
+                'POST /api/routes': 'Criar rota manualmente',
+                'POST /api/routes/generate-from-events': 'Gerar rota a partir de eventos finalizados',
+                'PUT /api/routes/:id': 'Atualizar rota',
+                'DELETE /api/routes/:id': 'Remover rota'
             }
         },
         exemplos: {
@@ -928,6 +1085,11 @@ app.get('/api/docs', (req, res) => {
                 url: '/api/events',
                 metodo: 'POST',
                 body: { name: 'Show de Rock', type: 'show', address: 'Estádio do Morumbi', city: 'São Paulo', state: 'SP', startDate: '2026-05-01', endDate: '2026-05-01', expectedAttendees: 50000 }
+            },
+            gerarRota: {
+                url: '/api/routes/generate-from-events',
+                metodo: 'POST',
+                descricao: 'Gera uma rota automaticamente a partir de eventos finalizados'
             }
         }
     });
@@ -962,6 +1124,7 @@ server.listen(PORT, () => {
     console.log(`📍 URL: http://localhost:${PORT}`);
     console.log(`📚 Documentação: http://localhost:${PORT}/api/docs`);
     console.log(`🤖 IA Service: http://ai-service:5001`);
+    console.log(`🚗 POST /api/routes/generate-from-events - Disponível`);
     console.log('=================================\n');
 });
 

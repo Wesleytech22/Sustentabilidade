@@ -7,6 +7,18 @@ const RoutesList = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Estados para busca externa
+  const [showExternalModal, setShowExternalModal] = useState(false);
+  const [externalEvents, setExternalEvents] = useState([]);
+  const [searchParams, setSearchParams] = useState({
+    keyword: '',
+    city: '',
+    countryCode: 'BR',
+    classification: ''
+  });
+  const [searching, setSearching] = useState(false);
+  const [importing, setImporting] = useState(false);
+
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -90,11 +102,87 @@ const RoutesList = () => {
     }
   };
 
+  // ========== FUNÇÕES DE BUSCA EXTERNA ==========
+  
+  // Buscar eventos externos
+  const searchExternalEvents = async () => {
+    try {
+      setSearching(true);
+      setError(null);
+      
+      const params = new URLSearchParams();
+      if (searchParams.keyword) params.append('keyword', searchParams.keyword);
+      if (searchParams.city) params.append('city', searchParams.city);
+      if (searchParams.countryCode) params.append('countryCode', searchParams.countryCode);
+      if (searchParams.classification) params.append('classification', searchParams.classification);
+      
+      const response = await axios.get(`${API_URL}/events/external/search?${params.toString()}`, getAuthHeaders());
+      
+      if (response.data.success) {
+        setExternalEvents(response.data.events || []);
+        if (response.data.events.length === 0) {
+          alert('Nenhum evento encontrado. Tente outros termos de busca.');
+        }
+      } else {
+        setError(response.data.error || 'Erro ao buscar eventos');
+      }
+    } catch (err) {
+      console.error('Erro ao buscar eventos externos:', err);
+      setError(err.response?.data?.error || 'Erro ao conectar com a API de eventos');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Importar evento externo
+  const importExternalEvent = async (eventId) => {
+    try {
+      setImporting(true);
+      const response = await axios.post(`${API_URL}/events/external/import/${eventId}`, {}, getAuthHeaders());
+      
+      if (response.data.success) {
+        alert(`Evento "${response.data.event.name}" importado com sucesso!`);
+        setShowExternalModal(false);
+        // Limpar busca
+        setExternalEvents([]);
+        setSearchParams({ keyword: '', city: '', countryCode: 'BR', classification: '' });
+      } else {
+        alert(response.data.error || 'Erro ao importar evento');
+      }
+    } catch (err) {
+      console.error('Erro ao importar evento:', err);
+      alert(err.response?.data?.error || 'Erro ao importar evento');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Buscar por classificação popular
+  const searchByClassification = async (classification) => {
+    try {
+      setSearching(true);
+      const response = await axios.get(`${API_URL}/events/external/classification/${encodeURIComponent(classification)}?countryCode=BR`, getAuthHeaders());
+      
+      if (response.data.success) {
+        setExternalEvents(response.data.events || []);
+        if (response.data.events.length === 0) {
+          alert(`Nenhum evento encontrado para a classificação: ${classification}`);
+        }
+      } else {
+        setError(response.data.error || 'Erro ao buscar eventos');
+      }
+    } catch (err) {
+      console.error('Erro ao buscar por classificação:', err);
+      setError(err.response?.data?.error || 'Erro ao buscar eventos por classificação');
+    } finally {
+      setSearching(false);
+    }
+  };
+
   // Chamar a rota do backend para criar nova rota
   const handleCreateRoute = async () => {
     try {
       setLoading(true);
-      // Chama o endpoint do backend que já existe
       const response = await axios.post(`${API_URL}/routes/generate-from-events`, {}, getAuthHeaders());
       
       const newRoute = {
@@ -119,6 +207,10 @@ const RoutesList = () => {
       if (err.response?.status === 401) {
         alert('Sessão expirada. Faça login novamente.');
         window.location.href = '/login';
+      } else if (err.response?.status === 404) {
+        alert('Nenhum evento finalizado encontrado. Finalize um evento primeiro ou importe eventos externos.');
+        // Abrir modal de busca externa
+        setShowExternalModal(true);
       } else {
         alert('Erro ao criar rota: ' + (err.response?.data?.error || err.message));
       }
@@ -245,9 +337,14 @@ const RoutesList = () => {
     <div className="routes-container">
       <div className="routes-header">
         <h2>Rotas Otimizadas</h2>
-        <button className="btn-primary" onClick={handleCreateRoute} disabled={loading}>
-          <i className="fas fa-plus"></i> Nova Rota
-        </button>
+        <div className="header-buttons">
+          <button className="btn-primary" onClick={handleCreateRoute} disabled={loading}>
+            <i className="fas fa-plus"></i> Nova Rota
+          </button>
+          <button className="btn-secondary" onClick={() => setShowExternalModal(true)}>
+            <i className="fas fa-globe"></i> Buscar Eventos Externos
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -265,6 +362,9 @@ const RoutesList = () => {
           </div>
           <h3>Nenhuma rota cadastrada</h3>
           <p>Clique em "Nova Rota" para gerar uma rota a partir de eventos finalizados</p>
+          <p style={{ marginTop: '10px', color: '#4CAF50' }}>
+            <i className="fas fa-globe"></i> Ou busque eventos externos para importar
+          </p>
         </div>
       ) : (
         <div className="routes-grid">
@@ -283,7 +383,6 @@ const RoutesList = () => {
                 </span>
               </div>
               
-              {/* Nome do Evento no Card */}
               {route.eventInfo && route.eventInfo.eventName && (
                 <div className="route-event-info" style={{ 
                   marginBottom: '12px', 
@@ -363,7 +462,180 @@ const RoutesList = () => {
         </div>
       )}
 
-      {/* MODAL DE DETALHES COM INFORMAÇÕES DO EVENTO */}
+      {/* MODAL DE BUSCA EXTERNA */}
+      {showExternalModal && (
+        <div className="modal-overlay" onClick={() => setShowExternalModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '800px' }}>
+            <div className="modal-header">
+              <h2><i className="fas fa-globe"></i> Buscar Eventos Externos</h2>
+              <button className="close" onClick={() => setShowExternalModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              {/* Busca Rápida por Classificação */}
+              <div className="details-section">
+                <h3>Busca Rápida</h3>
+                <div className="quick-search-buttons" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <button className="btn-secondary" onClick={() => searchByClassification('music')}>
+                    <i className="fas fa-music"></i> Shows
+                  </button>
+                  <button className="btn-secondary" onClick={() => searchByClassification('sports')}>
+                    <i className="fas fa-futbol"></i> Esportes
+                  </button>
+                  <button className="btn-secondary" onClick={() => searchByClassification('conference')}>
+                    <i className="fas fa-chalkboard-user"></i> Conferências
+                  </button>
+                  <button className="btn-secondary" onClick={() => searchByClassification('festival')}>
+                    <i className="fas fa-tree"></i> Festivais
+                  </button>
+                </div>
+              </div>
+
+              {/* Formulário de Busca */}
+              <div className="details-section">
+                <h3>Busca Personalizada</h3>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Palavra-chave</label>
+                    <input
+                      type="text"
+                      value={searchParams.keyword}
+                      onChange={(e) => setSearchParams({...searchParams, keyword: e.target.value})}
+                      placeholder="Ex: Rock in Rio, Show, Teatro"
+                      onKeyPress={(e) => e.key === 'Enter' && searchExternalEvents()}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Cidade</label>
+                    <input
+                      type="text"
+                      value={searchParams.city}
+                      onChange={(e) => setSearchParams({...searchParams, city: e.target.value})}
+                      placeholder="Ex: São Paulo, Rio de Janeiro"
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Classificação</label>
+                    <select
+                      value={searchParams.classification}
+                      onChange={(e) => setSearchParams({...searchParams, classification: e.target.value})}
+                    >
+                      <option value="">Todas</option>
+                      <option value="music">Música/Shows</option>
+                      <option value="sports">Esportes</option>
+                      <option value="arts">Artes e Teatro</option>
+                      <option value="conference">Conferências</option>
+                      <option value="festival">Festivais</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>País</label>
+                    <select
+                      value={searchParams.countryCode}
+                      onChange={(e) => setSearchParams({...searchParams, countryCode: e.target.value})}
+                    >
+                      <option value="BR">Brasil</option>
+                      <option value="US">Estados Unidos</option>
+                      <option value="PT">Portugal</option>
+                      <option value="ES">Espanha</option>
+                      <option value="FR">França</option>
+                      <option value="UK">Reino Unido</option>
+                    </select>
+                  </div>
+                </div>
+                <button 
+                  className="btn-primary" 
+                  onClick={searchExternalEvents} 
+                  disabled={searching}
+                  style={{ width: '100%', marginTop: '10px' }}
+                >
+                  {searching ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-search"></i>}
+                  {' '}{searching ? 'Buscando...' : 'Buscar Eventos'}
+                </button>
+              </div>
+
+              {/* Resultados da Busca */}
+              {externalEvents.length > 0 && (
+                <div className="details-section">
+                  <h3>Resultados ({externalEvents.length} eventos)</h3>
+                  <div className="external-events-list" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                    {externalEvents.map((event, index) => (
+                      <div key={event.id || index} className="external-event-card" style={{
+                        background: '#f8f9fa',
+                        padding: '15px',
+                        marginBottom: '10px',
+                        borderRadius: '8px',
+                        border: '1px solid #e0e0e0'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                          <div style={{ flex: 1 }}>
+                            <h4 style={{ margin: '0 0 8px 0', color: '#333' }}>
+                              <i className="fas fa-calendar-alt" style={{ color: '#4CAF50', marginRight: '8px' }}></i>
+                              {event.name}
+                            </h4>
+                            <p style={{ margin: '5px 0', fontSize: '13px', color: '#666' }}>
+                              <i className="fas fa-map-marker-alt"></i> {event.city}, {event.state} - {event.country}
+                            </p>
+                            <p style={{ margin: '5px 0', fontSize: '13px', color: '#666' }}>
+                              <i className="fas fa-calendar"></i> {new Date(event.startDate).toLocaleDateString('pt-BR')}
+                              {event.endDate && event.endDate !== event.startDate && ` até ${new Date(event.endDate).toLocaleDateString('pt-BR')}`}
+                            </p>
+                            {event.description && (
+                              <p style={{ margin: '5px 0', fontSize: '12px', color: '#888' }}>
+                                {event.description.substring(0, 100)}...
+                              </p>
+                            )}
+                            <div style={{ marginTop: '8px' }}>
+                              <span className="status-badge" style={{ 
+                                background: '#e3f2fd', 
+                                color: '#1976d2',
+                                fontSize: '11px'
+                              }}>
+                                {event.classification || 'Evento'}
+                              </span>
+                              {event.expectedAttendees && (
+                                <span className="status-badge" style={{ 
+                                  background: '#e8f5e9', 
+                                  color: '#2e7d32',
+                                  fontSize: '11px',
+                                  marginLeft: '8px'
+                                }}>
+                                  <i className="fas fa-users"></i> {event.expectedAttendees.toLocaleString()} pessoas
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button 
+                            className="btn-primary" 
+                            onClick={() => importExternalEvent(event.id)}
+                            disabled={importing}
+                            style={{ marginLeft: '15px', padding: '8px 16px', fontSize: '12px' }}
+                          >
+                            <i className="fas fa-download"></i> Importar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {externalEvents.length === 0 && !searching && (
+                <div className="empty-state" style={{ padding: '40px' }}>
+                  <i className="fas fa-search" style={{ fontSize: '48px', color: '#ccc' }}></i>
+                  <p>Busque por eventos para importar</p>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setShowExternalModal(false)}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE DETALHES */}
       {showDetailsModal && selectedRoute && (
         <div className="modal-overlay" onClick={() => setShowDetailsModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
@@ -380,7 +652,6 @@ const RoutesList = () => {
                 {selectedRoute.description && <p><strong>Descrição:</strong> {selectedRoute.description}</p>}
               </div>
 
-              {/* INFORMAÇÕES DO EVENTO */}
               {selectedRoute.eventInfo && selectedRoute.eventInfo.eventName && (
                 <div className="details-section">
                   <h3><i className="fas fa-calendar-alt"></i> Informações do Evento</h3>
@@ -392,7 +663,6 @@ const RoutesList = () => {
                 </div>
               )}
 
-              {/* LISTA DE MÚLTIPLOS EVENTOS */}
               {selectedRoute.eventsSummary && selectedRoute.eventsSummary.length > 0 && (
                 <div className="details-section">
                   <h3><i className="fas fa-tasks"></i> Eventos Relacionados ({selectedRoute.eventsSummary.length})</h3>

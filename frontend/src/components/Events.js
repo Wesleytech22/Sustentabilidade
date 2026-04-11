@@ -1,478 +1,618 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
+import axios from 'axios';
+import './components.css';
 
-const Events = () => {
-    const { api } = useAuth();
-    const navigate = useNavigate();
-    const [events, setEvents] = useState([]);
-    const [showModal, setShowModal] = useState(false);
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
-    const [generating, setGenerating] = useState(false);
-    const [showConfirmModal, setShowConfirmModal] = useState(false);
-    const [finishedEvents, setFinishedEvents] = useState([]);
-    const [error, setError] = useState('');
-    const [formData, setFormData] = useState({
-        name: '',
-        description: '',
-        type: 'outro',
-        address: '',
-        city: '',
-        state: '',
-        startDate: '',
-        endDate: '',
-        expectedAttendees: ''
-    });
+const EventsList = () => {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showExternalModal, setShowExternalModal] = useState(false);
+  const [externalEvents, setExternalEvents] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [importing, setImporting] = useState(false);
+  
+  const [searchParams, setSearchParams] = useState({
+    keyword: '',
+    city: '',
+    countryCode: 'BR',
+    classification: ''
+  });
 
-    useEffect(() => {
-        loadEvents();
-    }, []);
+  const [formData, setFormData] = useState({
+    name: '',
+    description: '',
+    type: 'outro',
+    address: '',
+    city: '',
+    state: '',
+    startDate: '',
+    endDate: '',
+    expectedAttendees: '',
+    estimatedWaste: ''
+  });
 
-    const loadEvents = async () => {
-        setLoading(true);
-        try {
-            const response = await api.get('/events');
-            setEvents(Array.isArray(response.data) ? response.data : response.data.events || []);
-        } catch (error) {
-            console.error('Erro ao carregar eventos:', error);
-            setError('Erro ao carregar eventos');
-            setEvents([]);
-        } finally {
-            setLoading(false);
-        }
+  const API_URL = 'http://localhost:3000/api';
+
+  const getAuthToken = () => {
+    const token = localStorage.getItem('token') || 
+                  localStorage.getItem('authToken') || 
+                  sessionStorage.getItem('token') ||
+                  sessionStorage.getItem('authToken');
+    return token;
+  };
+
+  const getAuthHeaders = () => {
+    const token = getAuthToken();
+    return {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
     };
+  };
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setSaving(true);
-        setError('');
-        
-        try {
-            if (!formData.name || !formData.address || !formData.city || !formData.state || !formData.startDate || !formData.endDate || !formData.expectedAttendees) {
-                setError('Preencha todos os campos obrigatórios');
-                setSaving(false);
-                return;
-            }
-
-            if (new Date(formData.startDate) > new Date(formData.endDate)) {
-                setError('Data de início não pode ser maior que data de fim');
-                setSaving(false);
-                return;
-            }
-
-            const response = await api.post('/events', formData);
-            console.log('Evento criado:', response.data);
-            
-            setShowModal(false);
-            loadEvents();
-            
-            setFormData({
-                name: '', description: '', type: 'outro', address: '',
-                city: '', state: '', startDate: '', endDate: '', expectedAttendees: ''
-            });
-        } catch (error) {
-            console.error('Erro ao criar evento:', error);
-            setError(error.response?.data?.error || 'Erro ao criar evento');
-        } finally {
-            setSaving(false);
-        }
-    };
-
-    const handleFinish = async (id) => {
-        if (!window.confirm('Confirmar finalização do evento? Após finalizado, poderá ser incluído na rota de coleta.')) return;
-        
-        try {
-            await api.post(`/events/${id}/finish`);
-            loadEvents();
-            showToast('Evento finalizado e coleta agendada!', 'success');
-        } catch (error) {
-            console.error('Erro ao finalizar evento:', error);
-            setError(error.response?.data?.error || 'Erro ao finalizar evento');
-        }
-    };
-
-    const showToast = (message, type = 'success') => {
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.innerHTML = `<i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i> ${message}`;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
-    };
-
-    const openGenerateRoutesModal = () => {
-        const finished = events.filter(event => event.status === 'finalizado');
-        
-        if (finished.length === 0) {
-            showToast('Nenhum evento finalizado aguardando coleta!', 'error');
-            return;
-        }
-        
-        setFinishedEvents(finished);
-        setShowConfirmModal(true);
-    };
-
-    // FUNÇÃO CORRIGIDA: GERAR ROTAS E REDIRECIONAR
-    const handleGenerateRoutes = async () => {
-        setGenerating(true);
-        
-        try {
-            console.log('🔍 Enviando requisição para gerar rota...');
-            
-            const response = await api.post('/events/generate-routes');
-            
-            console.log('📦 Resposta da API:', response.data);
-            
-            // Verificar se a requisição foi bem sucedida
-            if (response.data && response.data.success) {
-                showToast(response.data.message || 'Rotas geradas com sucesso!', 'success');
-                
-                setShowConfirmModal(false);
-                await loadEvents();
-                
-                // Redirecionar para a tela de rotas se houver eventos processados
-                if (response.data.eventsCount > 0 || response.data.route) {
-                    setTimeout(() => {
-                        navigate('/dashboard/routes');
-                    }, 1500);
-                }
-            } else {
-                showToast(response.data?.message || 'Erro ao gerar rotas', 'error');
-            }
-            
-        } catch (error) {
-            console.error('❌ Erro detalhado ao gerar rotas:');
-            console.error('Status:', error.response?.status);
-            console.error('Mensagem:', error.response?.data?.message || error.response?.data?.error);
-            
-            let errorMsg = 'Erro ao gerar rotas. ';
-            
-            if (error.response?.status === 401) {
-                errorMsg = 'Sessão expirada. Faça login novamente.';
-                navigate('/login');
-            } else if (error.response?.status === 404) {
-                errorMsg = 'Nenhum evento finalizado encontrado.';
-            } else if (error.response?.status === 500) {
-                errorMsg = 'Erro no servidor. Tente novamente mais tarde.';
-            } else {
-                errorMsg += error.response?.data?.message || error.response?.data?.error || 'Tente novamente.';
-            }
-            
-            showToast(errorMsg, 'error');
-        } finally {
-            setGenerating(false);
-        }
-    };
-
-    const getStatusText = (status) => {
-        const statusMap = {
-            'agendado': '📅 Agendado',
-            'em_andamento': '🎉 Em Andamento',
-            'finalizado': '✅ Finalizado',
-            'coleta_agendada': '🚛 Coleta Agendada',
-            'coleta_realizada': '✔️ Coleta Realizada'
-        };
-        return statusMap[status] || status;
-    };
-
-    const getTypeIcon = (type) => {
-        const icons = {
-            'show': '🎤',
-            'festa': '🎉',
-            'feira': '🏪',
-            'evento_esportivo': '⚽',
-            'outro': '📍'
-        };
-        return icons[type] || '📍';
-    };
-
-    if (loading) {
-        return (
-            <div className="loading-container">
-                <div className="spinner"></div>
-                <p>Carregando eventos...</p>
-            </div>
-        );
+  // Buscar eventos
+  const fetchEvents = async () => {
+    try {
+      setLoading(true);
+      const token = getAuthToken();
+      if (!token) {
+        setError('Usuário não autenticado');
+        setLoading(false);
+        return;
+      }
+      
+      const response = await axios.get(`${API_URL}/events`, getAuthHeaders());
+      setEvents(response.data || []);
+    } catch (err) {
+      console.error('Erro ao buscar eventos:', err);
+      setError('Erro ao carregar eventos');
+    } finally {
+      setLoading(false);
     }
+  };
 
+  // Criar evento manual
+  const handleCreateEvent = async (e) => {
+    e.preventDefault();
+    try {
+      setLoading(true);
+      await axios.post(`${API_URL}/events`, formData, getAuthHeaders());
+      alert('Evento criado com sucesso!');
+      setShowCreateModal(false);
+      setFormData({
+        name: '', description: '', type: 'outro', address: '', city: '',
+        state: '', startDate: '', endDate: '', expectedAttendees: '', estimatedWaste: ''
+      });
+      fetchEvents();
+    } catch (err) {
+      console.error('Erro ao criar evento:', err);
+      alert(err.response?.data?.error || 'Erro ao criar evento');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Finalizar evento
+  const handleFinishEvent = async (eventId) => {
+    if (!window.confirm('Finalizar este evento? Uma rota de coleta será criada.')) return;
+    
+    try {
+      await axios.post(`${API_URL}/events/${eventId}/finish`, {}, getAuthHeaders());
+      alert('Evento finalizado com sucesso!');
+      fetchEvents();
+    } catch (err) {
+      console.error('Erro ao finalizar evento:', err);
+      alert(err.response?.data?.error || 'Erro ao finalizar evento');
+    }
+  };
+
+  // Deletar evento
+  const handleDeleteEvent = async (eventId) => {
+    if (!window.confirm('Tem certeza que deseja excluir este evento?')) return;
+    
+    try {
+      await axios.delete(`${API_URL}/events/${eventId}`, getAuthHeaders());
+      alert('Evento excluído com sucesso!');
+      fetchEvents();
+    } catch (err) {
+      console.error('Erro ao excluir evento:', err);
+      alert('Erro ao excluir evento');
+    }
+  };
+
+  // ========== FUNÇÕES DE BUSCA EXTERNA ==========
+  
+  // Buscar eventos externos
+  const searchExternalEvents = async () => {
+    try {
+      setSearching(true);
+      setError(null);
+      
+      const params = new URLSearchParams();
+      if (searchParams.keyword) params.append('keyword', searchParams.keyword);
+      if (searchParams.city) params.append('city', searchParams.city);
+      if (searchParams.countryCode) params.append('countryCode', searchParams.countryCode);
+      if (searchParams.classification) params.append('classification', searchParams.classification);
+      
+      const response = await axios.get(`${API_URL}/events/external/search?${params.toString()}`, getAuthHeaders());
+      
+      if (response.data.success) {
+        setExternalEvents(response.data.events || []);
+        if (response.data.events.length === 0) {
+          alert('Nenhum evento encontrado. Tente outros termos de busca.');
+        }
+      } else {
+        setError(response.data.error || 'Erro ao buscar eventos');
+      }
+    } catch (err) {
+      console.error('Erro ao buscar eventos externos:', err);
+      setError(err.response?.data?.error || 'Erro ao conectar com a API de eventos');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Importar evento externo
+  const importExternalEvent = async (eventId) => {
+    try {
+      setImporting(true);
+      const response = await axios.post(`${API_URL}/events/external/import/${eventId}`, {}, getAuthHeaders());
+      
+      if (response.data.success) {
+        alert(`Evento "${response.data.event.name}" importado com sucesso!`);
+        setShowExternalModal(false);
+        setExternalEvents([]);
+        setSearchParams({ keyword: '', city: '', countryCode: 'BR', classification: '' });
+        fetchEvents();
+      } else {
+        alert(response.data.error || 'Erro ao importar evento');
+      }
+    } catch (err) {
+      console.error('Erro ao importar evento:', err);
+      alert(err.response?.data?.error || 'Erro ao importar evento');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Buscar por classificação popular
+  const searchByClassification = async (classification) => {
+    try {
+      setSearching(true);
+      const response = await axios.get(`${API_URL}/events/external/classification/${encodeURIComponent(classification)}?countryCode=BR`, getAuthHeaders());
+      
+      if (response.data.success) {
+        setExternalEvents(response.data.events || []);
+        if (response.data.events.length === 0) {
+          alert(`Nenhum evento encontrado para a classificação: ${classification}`);
+        }
+      } else {
+        setError(response.data.error || 'Erro ao buscar eventos');
+      }
+    } catch (err) {
+      console.error('Erro ao buscar por classificação:', err);
+      setError(err.response?.data?.error || 'Erro ao buscar eventos por classificação');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchEvents();
+  }, []);
+
+  const getStatusText = (status) => {
+    switch(status) {
+      case 'agendado': return 'Agendado';
+      case 'em_andamento': return 'Em Andamento';
+      case 'finalizado': return 'Finalizado';
+      case 'coleta_agendada': return 'Coleta Agendada';
+      default: return status;
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch(status) {
+      case 'agendado': return '#2196F3';
+      case 'em_andamento': return '#ff9800';
+      case 'finalizado': return '#4CAF50';
+      case 'coleta_agendada': return '#9C27B0';
+      default: return '#999';
+    }
+  };
+
+  if (loading && events.length === 0) {
     return (
-        <div className="events-container">
-            <div className="events-header">
-                <h2><i className="fas fa-calendar-alt"></i> Eventos e Coleta Programada</h2>
-                <div className="header-buttons">
-                    <button className="btn-primary" onClick={() => setShowModal(true)}>
-                        <i className="fas fa-plus"></i> Novo Evento
-                    </button>
-                    <button 
-                        className="btn-generate" 
-                        onClick={openGenerateRoutesModal}
-                        disabled={generating}
-                    >
-                        {generating ? (
-                            <><i className="fas fa-spinner fa-spin"></i> Gerando...</>
-                        ) : (
-                            <><i className="fas fa-route"></i> Gerar Rotas de Coleta</>
-                        )}
-                    </button>
-                </div>
-            </div>
-
-            {error && (
-                <div className="alert alert-error">
-                    <i className="fas fa-exclamation-circle"></i>
-                    {error}
-                    <button className="alert-close" onClick={() => setError('')}>×</button>
-                </div>
-            )}
-
-            {events.length === 0 ? (
-                <div className="empty-state">
-                    <div className="empty-icon">
-                        <i className="fas fa-calendar-alt"></i>
-                    </div>
-                    <h3>Nenhum evento cadastrado</h3>
-                    <p>Clique em "Novo Evento" para começar</p>
-                </div>
-            ) : (
-                <div className="events-grid">
-                    {events.map(event => (
-                        <div key={event._id} className="event-card">
-                            <div className="event-header">
-                                <span className="event-icon">{getTypeIcon(event.type)}</span>
-                                <h3>{event.name}</h3>
-                                <span className={`status-badge ${event.status}`}>
-                                    {getStatusText(event.status)}
-                                </span>
-                            </div>
-                            
-                            <p className="event-description">{event.description || 'Sem descrição'}</p>
-                            
-                            <div className="event-details">
-                                <div className="detail">
-                                    <i className="fas fa-map-marker-alt"></i>
-                                    <span>{event.address}, {event.city} - {event.state}</span>
-                                </div>
-                                <div className="detail">
-                                    <i className="fas fa-calendar"></i>
-                                    <span>{new Date(event.startDate).toLocaleDateString('pt-BR')} até {new Date(event.endDate).toLocaleDateString('pt-BR')}</span>
-                                </div>
-                                <div className="detail">
-                                    <i className="fas fa-users"></i>
-                                    <span>{event.expectedAttendees?.toLocaleString() || 0} pessoas</span>
-                                </div>
-                                <div className="detail">
-                                    <i className="fas fa-trash-alt"></i>
-                                    <span>Estimativa: {event.estimatedWaste?.toLocaleString() || 0} kg</span>
-                                </div>
-                                {event.scheduledCollectionDate && (
-                                    <div className="detail highlight">
-                                        <i className="fas fa-truck"></i>
-                                        <span>Coleta: {new Date(event.scheduledCollectionDate).toLocaleDateString('pt-BR')}</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {event.status === 'agendado' && (
-                                <button className="btn-finish" onClick={() => handleFinish(event._id)}>
-                                    <i className="fas fa-check"></i> Finalizar Evento
-                                </button>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            )}
-
-            {/* Modal de Confirmação */}
-            {showConfirmModal && (
-                <div className="modal-overlay" onClick={() => setShowConfirmModal(false)}>
-                    <div className="modal-content confirm-modal" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h2>Confirmar Geração de Rotas</h2>
-                            <button className="close" onClick={() => setShowConfirmModal(false)}>&times;</button>
-                        </div>
-                        <div className="modal-body">
-                            <p><strong>Eventos finalizados aguardando coleta:</strong></p>
-                            <div className="finished-events-list">
-                                {finishedEvents.map(event => (
-                                    <div key={event._id} className="finished-event-item">
-                                        <span className="event-icon">{getTypeIcon(event.type)}</span>
-                                        <div className="event-info">
-                                            <strong>{event.name}</strong>
-                                            <span>{event.address}, {event.city}</span>
-                                            <span>Estimativa: {event.estimatedWaste?.toLocaleString() || 0} kg</span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                            <p className="confirm-message">
-                                <i className="fas fa-info-circle"></i>
-                                Será criada uma rota otimizada para coletar todos estes eventos.
-                                Deseja continuar?
-                            </p>
-                        </div>
-                        <div className="modal-actions">
-                            <button className="btn-secondary" onClick={() => setShowConfirmModal(false)}>
-                                Cancelar
-                            </button>
-                            <button className="btn-primary" onClick={handleGenerateRoutes} disabled={generating}>
-                                {generating ? (
-                                    <><i className="fas fa-spinner fa-spin"></i> Gerando...</>
-                                ) : (
-                                    <><i className="fas fa-route"></i> Gerar Rota</>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Modal de Criação */}
-            {showModal && (
-                <div className="modal-overlay" onClick={() => setShowModal(false)}>
-                    <div className="modal-content" onClick={e => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h2>Novo Evento</h2>
-                            <button className="close" onClick={() => setShowModal(false)}>&times;</button>
-                        </div>
-                        <div className="modal-body">
-                            <form onSubmit={handleSubmit}>
-                                <div className="form-group">
-                                    <label>Nome do Evento *</label>
-                                    <input
-                                        type="text"
-                                        name="name"
-                                        value={formData.name}
-                                        onChange={(e) => setFormData({...formData, name: e.target.value})}
-                                        required
-                                    />
-                                </div>
-                                
-                                <div className="form-group">
-                                    <label>Tipo de Evento *</label>
-                                    <select
-                                        name="type"
-                                        value={formData.type}
-                                        onChange={(e) => setFormData({...formData, type: e.target.value})}
-                                    >
-                                        <option value="show">🎤 Show/Concerto</option>
-                                        <option value="festa">🎉 Festa</option>
-                                        <option value="feira">🏪 Feira</option>
-                                        <option value="evento_esportivo">⚽ Evento Esportivo</option>
-                                        <option value="outro">📍 Outro</option>
-                                    </select>
-                                </div>
-                                
-                                <div className="form-group">
-                                    <label>Descrição</label>
-                                    <textarea
-                                        rows="3"
-                                        name="description"
-                                        value={formData.description}
-                                        onChange={(e) => setFormData({...formData, description: e.target.value})}
-                                    />
-                                </div>
-                                
-                                <div className="form-row">
-                                    <div className="form-group">
-                                        <label>Data Início *</label>
-                                        <input
-                                            type="date"
-                                            name="startDate"
-                                            value={formData.startDate}
-                                            onChange={(e) => setFormData({...formData, startDate: e.target.value})}
-                                            required
-                                        />
-                                    </div>
-                                    <div className="form-group">
-                                        <label>Data Fim *</label>
-                                        <input
-                                            type="date"
-                                            name="endDate"
-                                            value={formData.endDate}
-                                            onChange={(e) => setFormData({...formData, endDate: e.target.value})}
-                                            required
-                                        />
-                                    </div>
-                                </div>
-                                
-                                <div className="form-group">
-                                    <label>Endereço *</label>
-                                    <input
-                                        type="text"
-                                        name="address"
-                                        value={formData.address}
-                                        onChange={(e) => setFormData({...formData, address: e.target.value})}
-                                        required
-                                    />
-                                </div>
-                                
-                                <div className="form-row">
-                                    <div className="form-group">
-                                        <label>Cidade *</label>
-                                        <input
-                                            type="text"
-                                            name="city"
-                                            value={formData.city}
-                                            onChange={(e) => setFormData({...formData, city: e.target.value})}
-                                            required
-                                        />
-                                    </div>
-                                    <div className="form-group">
-                                        <label>UF *</label>
-                                        <input
-                                            type="text"
-                                            name="state"
-                                            maxLength="2"
-                                            value={formData.state}
-                                            onChange={(e) => setFormData({...formData, state: e.target.value.toUpperCase()})}
-                                            required
-                                        />
-                                    </div>
-                                </div>
-                                
-                                <div className="form-group">
-                                    <label>Público Esperado *</label>
-                                    <input
-                                        type="number"
-                                        name="expectedAttendees"
-                                        value={formData.expectedAttendees}
-                                        onChange={(e) => setFormData({...formData, expectedAttendees: e.target.value})}
-                                        required
-                                    />
-                                </div>
-
-                                {error && (
-                                    <div className="alert alert-error">
-                                        <i className="fas fa-exclamation-circle"></i>
-                                        {error}
-                                    </div>
-                                )}
-                                
-                                <div className="modal-actions">
-                                    <button type="button" className="btn-secondary" onClick={() => setShowModal(false)} disabled={saving}>
-                                        Cancelar
-                                    </button>
-                                    <button type="submit" className="btn-primary" disabled={saving}>
-                                        {saving ? (
-                                            <>
-                                                <i className="fas fa-spinner fa-spin"></i>
-                                                Salvando...
-                                            </>
-                                        ) : (
-                                            <>
-                                                <i className="fas fa-save"></i>
-                                                Salvar Evento
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            )}
+      <div className="events-container">
+        <div className="loading-state">
+          <i className="fas fa-spinner fa-spin"></i>
+          <p>Carregando eventos...</p>
         </div>
+      </div>
     );
+  }
+
+  return (
+    <div className="events-container">
+      <div className="events-header">
+        <h2><i className="fas fa-calendar-alt"></i> Eventos</h2>
+        <div className="header-buttons">
+          <button className="btn-primary" onClick={() => setShowExternalModal(true)}>
+            <i className="fas fa-globe"></i> Buscar Eventos Externos
+          </button>
+          <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
+            <i className="fas fa-plus"></i> Criar Evento
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="error-state">
+          <i className="fas fa-exclamation-triangle"></i>
+          <p>{error}</p>
+          <button onClick={fetchEvents} className="btn-primary">Tentar Novamente</button>
+        </div>
+      )}
+
+      {events.length === 0 && !error ? (
+        <div className="empty-state">
+          <div className="empty-icon">
+            <i className="fas fa-calendar-alt"></i>
+          </div>
+          <h3>Nenhum evento cadastrado</h3>
+          <p>Clique em "Buscar Eventos Externos" para importar eventos ou "Criar Evento" para cadastrar manualmente</p>
+        </div>
+      ) : (
+        <div className="events-grid">
+          {events.map(event => (
+            <div key={event._id} className="event-card">
+              <div className="event-header">
+                <div className="event-icon">
+                  <i className="fas fa-calendar-alt"></i>
+                </div>
+                <h3>{event.name}</h3>
+                <span 
+                  className="status-badge"
+                  style={{ backgroundColor: getStatusColor(event.status) + '20', color: getStatusColor(event.status) }}
+                >
+                  {getStatusText(event.status)}
+                </span>
+              </div>
+              
+              <p className="event-description">{event.description || 'Sem descrição'}</p>
+              
+              <div className="event-details">
+                <div className="detail">
+                  <i className="fas fa-map-marker-alt"></i>
+                  <span>{event.city}, {event.state}</span>
+                </div>
+                <div className="detail">
+                  <i className="fas fa-calendar"></i>
+                  <span>{new Date(event.startDate).toLocaleDateString('pt-BR')}</span>
+                </div>
+                <div className="detail">
+                  <i className="fas fa-users"></i>
+                  <span>{event.expectedAttendees?.toLocaleString()} pessoas</span>
+                </div>
+                <div className="detail">
+                  <i className="fas fa-trash-alt"></i>
+                  <span>{event.estimatedWaste} kg estimados</span>
+                </div>
+                {event.status === 'finalizado' && (
+                  <div className="detail highlight">
+                    <i className="fas fa-check-circle"></i>
+                    <span>Aguardando coleta</span>
+                  </div>
+                )}
+                {event.status === 'coleta_agendada' && (
+                  <div className="detail highlight">
+                    <i className="fas fa-truck"></i>
+                    <span>Coleta agendada para {event.scheduledCollectionDate ? new Date(event.scheduledCollectionDate).toLocaleDateString('pt-BR') : 'em breve'}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="event-actions">
+                {(event.status === 'agendado' || event.status === 'em_andamento') && (
+                  <button className="btn-finish" onClick={() => handleFinishEvent(event._id)}>
+                    <i className="fas fa-check"></i> Finalizar Evento
+                  </button>
+                )}
+                <button className="btn-delete" onClick={() => handleDeleteEvent(event._id)}>
+                  <i className="fas fa-trash"></i> Excluir
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* MODAL DE BUSCA EXTERNA */}
+      {showExternalModal && (
+        <div className="modal-overlay" onClick={() => setShowExternalModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '800px' }}>
+            <div className="modal-header">
+              <h2><i className="fas fa-globe"></i> Buscar Eventos Externos</h2>
+              <button className="close" onClick={() => setShowExternalModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              {/* Busca Rápida por Classificação */}
+              <div className="details-section">
+                <h3>Busca Rápida</h3>
+                <div className="quick-search-buttons" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <button className="btn-secondary" onClick={() => searchByClassification('music')}>
+                    <i className="fas fa-music"></i> Shows
+                  </button>
+                  <button className="btn-secondary" onClick={() => searchByClassification('sports')}>
+                    <i className="fas fa-futbol"></i> Esportes
+                  </button>
+                  <button className="btn-secondary" onClick={() => searchByClassification('conference')}>
+                    <i className="fas fa-chalkboard-user"></i> Conferências
+                  </button>
+                  <button className="btn-secondary" onClick={() => searchByClassification('festival')}>
+                    <i className="fas fa-tree"></i> Festivais
+                  </button>
+                </div>
+              </div>
+
+              {/* Formulário de Busca */}
+              <div className="details-section">
+                <h3>Busca Personalizada</h3>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Palavra-chave</label>
+                    <input
+                      type="text"
+                      value={searchParams.keyword}
+                      onChange={(e) => setSearchParams({...searchParams, keyword: e.target.value})}
+                      placeholder="Ex: Rock in Rio, Show, Teatro"
+                      onKeyPress={(e) => e.key === 'Enter' && searchExternalEvents()}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Cidade</label>
+                    <input
+                      type="text"
+                      value={searchParams.city}
+                      onChange={(e) => setSearchParams({...searchParams, city: e.target.value})}
+                      placeholder="Ex: São Paulo, Rio de Janeiro"
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Classificação</label>
+                    <select
+                      value={searchParams.classification}
+                      onChange={(e) => setSearchParams({...searchParams, classification: e.target.value})}
+                    >
+                      <option value="">Todas</option>
+                      <option value="music">Música/Shows</option>
+                      <option value="sports">Esportes</option>
+                      <option value="arts">Artes e Teatro</option>
+                      <option value="conference">Conferências</option>
+                      <option value="festival">Festivais</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>País</label>
+                    <select
+                      value={searchParams.countryCode}
+                      onChange={(e) => setSearchParams({...searchParams, countryCode: e.target.value})}
+                    >
+                      <option value="BR">Brasil</option>
+                      <option value="US">Estados Unidos</option>
+                      <option value="PT">Portugal</option>
+                      <option value="ES">Espanha</option>
+                      <option value="FR">França</option>
+                      <option value="UK">Reino Unido</option>
+                    </select>
+                  </div>
+                </div>
+                <button 
+                  className="btn-primary" 
+                  onClick={searchExternalEvents} 
+                  disabled={searching}
+                  style={{ width: '100%', marginTop: '10px' }}
+                >
+                  {searching ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-search"></i>}
+                  {' '}{searching ? 'Buscando...' : 'Buscar Eventos'}
+                </button>
+              </div>
+
+              {/* Resultados da Busca */}
+              {externalEvents.length > 0 && (
+                <div className="details-section">
+                  <h3>Resultados ({externalEvents.length} eventos)</h3>
+                  <div className="external-events-list" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                    {externalEvents.map((event, index) => (
+                      <div key={event.id || index} className="external-event-card" style={{
+                        background: '#f8f9fa',
+                        padding: '15px',
+                        marginBottom: '10px',
+                        borderRadius: '8px',
+                        border: '1px solid #e0e0e0'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                          <div style={{ flex: 1 }}>
+                            <h4 style={{ margin: '0 0 8px 0', color: '#333' }}>
+                              <i className="fas fa-calendar-alt" style={{ color: '#4CAF50', marginRight: '8px' }}></i>
+                              {event.name}
+                            </h4>
+                            <p style={{ margin: '5px 0', fontSize: '13px', color: '#666' }}>
+                              <i className="fas fa-map-marker-alt"></i> {event.city}, {event.state} - {event.country}
+                            </p>
+                            <p style={{ margin: '5px 0', fontSize: '13px', color: '#666' }}>
+                              <i className="fas fa-calendar"></i> {new Date(event.startDate).toLocaleDateString('pt-BR')}
+                              {event.endDate && event.endDate !== event.startDate && ` até ${new Date(event.endDate).toLocaleDateString('pt-BR')}`}
+                            </p>
+                            {event.description && (
+                              <p style={{ margin: '5px 0', fontSize: '12px', color: '#888' }}>
+                                {event.description.substring(0, 100)}...
+                              </p>
+                            )}
+                            <div style={{ marginTop: '8px' }}>
+                              <span className="status-badge" style={{ 
+                                background: '#e3f2fd', 
+                                color: '#1976d2',
+                                fontSize: '11px'
+                              }}>
+                                {event.classification || 'Evento'}
+                              </span>
+                              {event.expectedAttendees && (
+                                <span className="status-badge" style={{ 
+                                  background: '#e8f5e9', 
+                                  color: '#2e7d32',
+                                  fontSize: '11px',
+                                  marginLeft: '8px'
+                                }}>
+                                  <i className="fas fa-users"></i> {event.expectedAttendees.toLocaleString()} pessoas
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button 
+                            className="btn-primary" 
+                            onClick={() => importExternalEvent(event.id)}
+                            disabled={importing}
+                            style={{ marginLeft: '15px', padding: '8px 16px', fontSize: '12px' }}
+                          >
+                            <i className="fas fa-download"></i> Importar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {externalEvents.length === 0 && !searching && (
+                <div className="empty-state" style={{ padding: '40px' }}>
+                  <i className="fas fa-search" style={{ fontSize: '48px', color: '#ccc' }}></i>
+                  <p>Busque por eventos para importar</p>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setShowExternalModal(false)}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CRIAR EVENTO MANUAL */}
+      {showCreateModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Criar Evento</h2>
+              <button className="close" onClick={() => setShowCreateModal(false)}>&times;</button>
+            </div>
+            <form onSubmit={handleCreateEvent}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label>Nome do Evento *</label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({...formData, name: e.target.value})}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Descrição</label>
+                  <textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({...formData, description: e.target.value})}
+                    rows="3"
+                  />
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Endereço *</label>
+                    <input
+                      type="text"
+                      value={formData.address}
+                      onChange={(e) => setFormData({...formData, address: e.target.value})}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Cidade *</label>
+                    <input
+                      type="text"
+                      value={formData.city}
+                      onChange={(e) => setFormData({...formData, city: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Estado *</label>
+                    <input
+                      type="text"
+                      value={formData.state}
+                      onChange={(e) => setFormData({...formData, state: e.target.value.toUpperCase()})}
+                      placeholder="SP"
+                      maxLength="2"
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Data Início *</label>
+                    <input
+                      type="date"
+                      value={formData.startDate}
+                      onChange={(e) => setFormData({...formData, startDate: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Data Fim *</label>
+                    <input
+                      type="date"
+                      value={formData.endDate}
+                      onChange={(e) => setFormData({...formData, endDate: e.target.value})}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Público Esperado *</label>
+                    <input
+                      type="number"
+                      value={formData.expectedAttendees}
+                      onChange={(e) => setFormData({...formData, expectedAttendees: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Resíduos Estimados (kg)</label>
+                    <input
+                      type="number"
+                      value={formData.estimatedWaste}
+                      onChange={(e) => setFormData({...formData, estimatedWaste: e.target.value})}
+                      placeholder="Automático"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn-secondary" onClick={() => setShowCreateModal(false)}>Cancelar</button>
+                <button type="submit" className="btn-primary" disabled={loading}>Criar Evento</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
-export default Events;
+export default EventsList;

@@ -1967,3 +1967,336 @@
     transform: translateY(0);
   }
 }
+
+/* ========== ESTILOS ADICIONAIS PARA EVENTOS ========== */
+
+/* Event Actions - Botões dentro dos cards de evento */
+.event-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #f0f0f0;
+}
+
+.event-actions button {
+    flex: 1;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.3s ease;
+}
+
+.event-actions .btn-finish {
+    background: linear-gradient(135deg, #ff9800, #f57c00);
+    color: white;
+}
+
+.event-actions .btn-finish:hover {
+    background: linear-gradient(135deg, #f57c00, #ef6c00);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
+}
+
+.event-actions .btn-delete {
+    background: linear-gradient(135deg, #f44336, #d32f2f);
+    color: white;
+}
+
+.event-actions .btn-delete:hover {
+    background: linear-gradient(135deg, #d32f2f, #c62828);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
+}
+
+/* Quick Search Buttons */
+.quick-search-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.quick-search-buttons .btn-secondary {
+    background: #f5f5f5;
+    color: #666;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 13px;
+}
+
+.quick-search-buttons .btn-secondary:hover {
+    background: #e8f5e9;
+    color: #4CAF50;
+    transform: translateY(-2px);
+}
+
+/* External Event Card */
+.external-event-card {
+    transition: all 0.3s ease;
+}
+
+.external-event-card:hover {
+    transform: translateX(4px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    border-color: #4CAF50 !important;
+}
+
+/* Header Buttons */
+.header-buttons {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.header-buttons .btn-primary {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+}
+
+.header-buttons .btn-primary:first-child {
+    background: linear-gradient(135deg, #2196F3, #1976D2);
+}
+
+.header-buttons .btn-primary:first-child:hover {
+    background: linear-gradient(135deg, #1976D2, #1565C0);
+}
+
+/* Loading Spinner melhorado */
+.loading-spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #4CAF50;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Badge de status para coleta agendada */
+.status-badge.coleta_agendada {
+    background: #e8f5e9;
+    color: #4CAF50;
+}
+
+.status-badge.finalizado {
+    background: #e8f5e9;
+    color: #4CAF50;
+}
+
+/* Highlight para detalhes do evento */
+.detail.highlight {
+    background: linear-gradient(135deg, #e8f5e9, #c8e6c9);
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-top: 8px;
+    font-weight: 500;
+}
+
+.detail.highlight i {
+    color: #4CAF50;
+}
+
+/* Scrollbar para lista de eventos externos */
+.external-events-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.external-events-list::-webkit-scrollbar-track {
+    background: #f5f5f5;
+    border-radius: 3px;
+}
+
+.external-events-list::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 3px;
+}
+
+.external-events-list::-webkit-scrollbar-thumb:hover {
+    background: #4CAF50;
+}
+
+/* Animações para cards de evento */
+.event-card {
+    animation: fadeInUp 0.5s ease;
+    animation-fill-mode: both;
+}
+
+.event-card:nth-child(1) { animation-delay: 0.05s; }
+.event-card:nth-child(2) { animation-delay: 0.1s; }
+.event-card:nth-child(3) { animation-delay: 0.15s; }
+.event-card:nth-child(4) { animation-delay: 0.2s; }
+.event-card:nth-child(5) { animation-delay: 0.25s; }
+.event-card:nth-child(6) { animation-delay: 0.3s; }
+
+/* Tooltip para ícones */
+[data-tooltip] {
+    position: relative;
+    cursor: pointer;
+}
+
+[data-tooltip]:before {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 5px 10px;
+    background: #333;
+    color: white;
+    font-size: 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.3s;
+    z-index: 1000;
+}
+
+[data-tooltip]:hover:before {
+    opacity: 1;
+    visibility: visible;
+    margin-bottom: 5px;
+}
+
+/* Responsividade para eventos */
+@media (max-width: 768px) {
+    .events-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .event-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .event-header h3 {
+        width: 100%;
+    }
+    
+    .event-actions {
+        flex-direction: column;
+    }
+    
+    .event-actions button {
+        width: 100%;
+    }
+    
+    .quick-search-buttons {
+        justify-content: center;
+    }
+    
+    .header-buttons {
+        width: 100%;
+        flex-direction: column;
+    }
+    
+    .header-buttons button {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+@media (max-width: 480px) {
+    .events-container {
+        padding: 10px;
+    }
+    
+    .event-card {
+        padding: 15px;
+    }
+    
+    .event-icon {
+        font-size: 24px;
+    }
+    
+    .event-header h3 {
+        font-size: 16px;
+    }
+    
+    .detail {
+        font-size: 12px;
+    }
+    
+    .modal-content {
+        width: 95%;
+        margin: 10px;
+    }
+    
+    .form-row {
+        grid-template-columns: 1fr;
+        gap: 0;
+    }
+}
+
+/* Estado vazio melhorado */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    background: white;
+    border-radius: 16px;
+    margin: 20px;
+}
+
+.empty-icon {
+    font-size: 64px;
+    color: #ddd;
+    margin-bottom: 20px;
+    animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+}
+
+.empty-state h3 {
+    color: #333;
+    margin-bottom: 8px;
+    font-size: 20px;
+}
+
+.empty-state p {
+    color: #999;
+    margin-bottom: 20px;
+}
+
+.empty-state .btn-primary {
+    margin-top: 10px;
+}
+
+/* Botão de busca externa específico */
+.btn-external-search {
+    background: linear-gradient(135deg, #2196F3, #1976D2);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s;
+}
+
+.btn-external-search:hover {
+    background: linear-gradient(135deg, #1976D2, #1565C0);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+}
+
+.btn-external-search i {
+    font-size: 16px;
+}
