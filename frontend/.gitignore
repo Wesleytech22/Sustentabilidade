@@ -10,3 +10,5 @@ README.md
 coverage
 .DS_Store
 *.log
+.vercel
+.env*.local

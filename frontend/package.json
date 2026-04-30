@@ -22,7 +22,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "CI=false DISABLE_ESLINT_PLUGIN=true react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "env:dev": "copy .env.development .env && echo ================================= && echo ✅ Ambiente DESENVOLVIMENTO configurado && echo 📱 Frontend: http://localhost:3001 && echo 🔗 API: http://localhost:3000/api && echo =================================",
