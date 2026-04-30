@@ -49,6 +49,8 @@ if (isProduction) {
 }
 
 const allowedOrigins = [
+    'https://frontend-sustentabilidade.vercel.app',
+    'https://frontend-sustentabilidade-kqv4le4pi-wesleys-projects-899c5b81.vercel.app',
     'http://localhost:3000',
     'http://localhost:3001',
     'http://localhost:3002',
@@ -62,16 +64,19 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-    origin: isProduction 
-        ? process.env.CORS_ORIGIN || 'https://seudominio.com' 
-        : function(origin, callback) {
-            if (!origin) return callback(null, true);
-            if (allowedOrigins.indexOf(origin) !== -1 || !isProduction) {
-                callback(null, true);
-            } else {
-                callback(new Error('Not allowed by CORS'));
-            }
-        },
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        }
+        else if (origin.match(/https:\/\/.*\.vercel\.app$/)) {
+            callback(null, true);
+        }
+        else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -93,11 +98,11 @@ const connectDB = async () => {
         console.log('\n=================================');
         console.log('🔌 INICIANDO CONEXÃO COM MONGODB');
         console.log('=================================');
-        
+
         console.log(`📋 NODE_ENV: ${process.env.NODE_ENV || 'não definido'}`);
-        
+
         let mongoURI = process.env.MONGODB_URI;
-        
+
         if (!mongoURI && process.env.MONGO_ROOT_USER) {
             mongoURI = `mongodb://${process.env.MONGO_ROOT_USER}:${process.env.MONGO_ROOT_PASSWORD}@mongodb:27017/${process.env.MONGO_DATABASE}?authSource=admin`;
             console.log('📦 Modo: MongoDB no Docker');
@@ -115,7 +120,7 @@ const connectDB = async () => {
 
         const safeURI = mongoURI.replace(/:([^@]+)@/, ':****@');
         console.log(`📍 Conectando a: ${safeURI}`);
-        
+
         const mongooseOptions = {
             maxPoolSize: isProduction ? 50 : 10,
             minPoolSize: isProduction ? 10 : 2,
@@ -137,15 +142,15 @@ const connectDB = async () => {
         };
 
         console.log(`⚙️ Opções: Pool=${mongooseOptions.maxPoolSize}, Timeout=${mongooseOptions.serverSelectionTimeoutMS}ms`);
-        
+
         await mongoose.connect(mongoURI, mongooseOptions);
-        
+
         console.log('✅ MongoDB Conectado com sucesso!');
         console.log(`📊 Database: ${mongoose.connection.name}`);
         console.log(`🌐 Host: ${mongoose.connection.host}`);
         console.log(`🔗 Pool: ${mongooseOptions.maxPoolSize} conexões`);
         console.log('=================================\n');
-        
+
         mongoose.connection.on('error', (err) => {
             console.error('❌ Erro no MongoDB:', err);
         });
@@ -159,13 +164,13 @@ const connectDB = async () => {
         });
 
         return mongoose.connection;
-        
+
     } catch (error) {
         console.error('\n❌ ERRO AO CONECTAR MONGODB:');
         console.error(`   ${error.message}\n`);
-        
+
         console.log('🔍 DIAGNÓSTICO:');
-        
+
         if (error.message.includes('bad auth') || error.message.includes('Authentication failed')) {
             console.log('   ⚠️  Erro de autenticação:');
             console.log('      • Verifique usuário e senha no .env');
@@ -187,7 +192,7 @@ const connectDB = async () => {
             console.log('   ⚠️  Conexão recusada:');
             console.log('      • Tentando conectar ao MongoDB local');
         }
-        
+
         console.log('\n💡 SOLUÇÕES:');
         console.log('   1. No MongoDB Atlas:');
         console.log('      • Acesse: https://cloud.mongodb.com');
@@ -198,7 +203,7 @@ const connectDB = async () => {
         console.log('      • Confirme a variável MONGODB_URI');
         console.log('      • Faça novo deploy com "Clear build cache"');
         console.log('=================================\n');
-        
+
         if (process.env.NODE_ENV === 'production') {
             console.error('\n❌ PRODUÇÃO: Encerrando aplicação. O Render vai reiniciar automaticamente.');
             process.exit(1);
@@ -229,7 +234,7 @@ const collectionPointSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true }
 }, { timestamps: true, toJSON: { virtuals: true } });
 
-collectionPointSchema.virtual('occupancyPercentage').get(function() {
+collectionPointSchema.virtual('occupancyPercentage').get(function () {
     if (this.capacity === 0) return 0;
     return Math.round((this.currentVolume / this.capacity) * 100);
 });
@@ -286,7 +291,7 @@ const Collection = mongoose.model('Collection', collectionSchema);
 const authenticateToken = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
-        
+
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({ error: 'Token não fornecido ou formato inválido' });
         }
@@ -294,7 +299,7 @@ const authenticateToken = async (req, res, next) => {
         const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const user = await User.findById(decoded.id).select('-password');
-        
+
         if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
         if (!user.active) return res.status(401).json({ error: 'Usuário inativo' });
 
@@ -377,7 +382,7 @@ app.post('/api/auth/register', async (req, res) => {
         const userResponse = user.toObject();
         delete userResponse.password;
 
-        res.status(201).json({ 
+        res.status(201).json({
             success: true,
             user: userResponse,
             token,
@@ -386,13 +391,13 @@ app.post('/api/auth/register', async (req, res) => {
 
     } catch (error) {
         console.error('❌ Erro no registro:', error);
-        
+
         if (error.name === 'ValidationError') {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: Object.values(error.errors).map(e => e.message).join(', ')
             });
         }
-        
+
         res.status(500).json({ error: 'Erro interno do servidor' });
     }
 });
@@ -406,7 +411,7 @@ app.post('/api/auth/login', async (req, res) => {
         }
 
         const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
-        
+
         if (!user) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
@@ -416,7 +421,7 @@ app.post('/api/auth/login', async (req, res) => {
         }
 
         const isValid = await bcrypt.compare(password, user.password);
-        
+
         if (!isValid) {
             return res.status(401).json({ error: 'Email ou senha inválidos' });
         }
@@ -433,7 +438,7 @@ app.post('/api/auth/login', async (req, res) => {
         const userResponse = user.toObject();
         delete userResponse.password;
 
-        res.json({ 
+        res.json({
             success: true,
             user: userResponse,
             token,
@@ -449,22 +454,22 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/verify-email', async (req, res) => {
     try {
         const { email, code } = req.body;
-        
+
         const user = await User.findOne({
             email: email.toLowerCase(),
             verificationCode: code,
             verificationCodeExpires: { $gt: new Date() }
         });
-        
+
         if (!user) {
             return res.status(400).json({ error: 'Código inválido ou expirado' });
         }
-        
+
         user.emailVerified = true;
         user.verificationCode = undefined;
         user.verificationCodeExpires = undefined;
         await user.save();
-        
+
         res.json({ message: 'Email verificado com sucesso! Agora você pode fazer login.' });
     } catch (error) {
         console.error('❌ Erro na verificação:', error);
@@ -475,24 +480,24 @@ app.post('/api/auth/verify-email', async (req, res) => {
 app.post('/api/auth/resend-verification', async (req, res) => {
     try {
         const { email } = req.body;
-        
+
         const user = await User.findOne({ email: email.toLowerCase() });
-        
+
         if (!user) {
             return res.status(404).json({ error: 'Usuário não encontrado' });
         }
-        
+
         if (user.emailVerified) {
             return res.status(400).json({ error: 'Email já verificado' });
         }
-        
+
         const verificationCode = generateVerificationCode();
         user.verificationCode = verificationCode;
         user.verificationCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
         await user.save();
-        
+
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
-        
+
         res.json({ message: 'Código reenviado com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao reenviar código:', error);
@@ -512,7 +517,7 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
         const { name, phone, city, state } = req.body;
-        
+
         const user = await User.findByIdAndUpdate(
             req.userId,
             { name, phone, city, state: state?.toUpperCase() },
@@ -546,12 +551,12 @@ app.post('/api/points', authenticateToken, async (req, res) => {
         res.status(201).json({ point, message: 'Ponto de coleta criado com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao criar ponto:', error);
-        
+
         if (error.name === 'ValidationError') {
             const errors = Object.values(error.errors).map(err => err.message);
             return res.status(400).json({ error: errors.join(', ') });
         }
-        
+
         res.status(500).json({ error: error.message || 'Erro ao criar ponto de coleta' });
     }
 });
@@ -559,12 +564,12 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 app.get('/api/points', authenticateToken, async (req, res) => {
     try {
         const { status, city, wasteType } = req.query;
-        
+
         const filter = { userId: req.userId };
         if (status) filter.status = status;
         if (city) filter.city = city;
         if (wasteType) filter.wasteTypes = wasteType;
-        
+
         const points = await CollectionPoint.find(filter).sort({ createdAt: -1 });
         res.json(points);
     } catch (error) {
@@ -576,13 +581,13 @@ app.get('/api/points', authenticateToken, async (req, res) => {
 app.delete('/api/points/:id', authenticateToken, async (req, res) => {
     try {
         console.log('🗑️ Tentando deletar ponto ID:', req.params.id);
-        
+
         const point = await CollectionPoint.findOneAndDelete({ _id: req.params.id, userId: req.userId });
-        
+
         if (!point) {
             return res.status(404).json({ error: 'Ponto não encontrado' });
         }
-        
+
         res.json({ message: 'Ponto deletado com sucesso', deletedPoint: point });
     } catch (error) {
         console.error('❌ Erro ao deletar ponto:', error);
@@ -594,7 +599,7 @@ app.delete('/api/points/:id', authenticateToken, async (req, res) => {
 app.post('/api/messages', authenticateToken, async (req, res) => {
     try {
         const { content, room, recipient } = req.body;
-        
+
         const message = new Message({
             content,
             room: room || 'geral',
@@ -602,18 +607,18 @@ app.post('/api/messages', authenticateToken, async (req, res) => {
             senderName: req.user.name,
             recipient
         });
-        
+
         await message.save();
-        
+
         const io = req.app.get('io');
         if (io) {
             io.emit('new-message', { ...message.toJSON(), timestamp: new Date() });
         }
-        
+
         if (recipient) {
             await Notification.createMessageNotification(recipient, req.user.name, content);
         }
-        
+
         res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message });
     } catch (error) {
         console.error('❌ Erro ao enviar mensagem:', error);
@@ -625,7 +630,7 @@ app.get('/api/messages/:room', authenticateToken, async (req, res) => {
     try {
         const { room } = req.params;
         const { limit = 50, before } = req.query;
-        
+
         const messages = await Message.getRoomHistory(room, parseInt(limit), before);
         res.json(messages);
     } catch (error) {
@@ -652,10 +657,10 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
         const { read, limit = 50 } = req.query;
         const query = { user: req.userId };
         if (read !== undefined) query.read = read === 'true';
-        
+
         const notifications = await Notification.find(query).sort({ createdAt: -1 }).limit(parseInt(limit));
         const unreadCount = await Notification.countDocuments({ user: req.userId, read: false });
-        
+
         res.json({ notifications, unreadCount, total: notifications.length });
     } catch (error) {
         console.error('❌ Erro ao buscar notificações:', error);
@@ -702,9 +707,9 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
         const routeData = { ...req.body, userId: req.userId };
         const route = new Route(routeData);
         await route.save();
-        
+
         await Notification.createRouteNotification(req.userId, route.name);
-        
+
         const io = req.app.get('io');
         if (io) io.emit('route-changed', { type: 'new', route, timestamp: new Date() });
 
@@ -725,7 +730,7 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
             if (startDate) filter.date.$gte = new Date(startDate);
             if (endDate) filter.date.$lte = new Date(endDate);
         }
-        
+
         const routes = await Route.find(filter).populate('points.pointId').sort({ date: -1 });
         res.json(routes);
     } catch (error) {
@@ -738,28 +743,28 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
 app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
     try {
         console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
-        
+
         // Importar o modelo de Eventos
         const Event = require('./src/models/Events');
-        
+
         // Buscar eventos do usuário com status 'finalizado'
-        const finishedEvents = await Event.find({ 
-            userId: req.userId, 
-            status: 'finalizado' 
+        const finishedEvents = await Event.find({
+            userId: req.userId,
+            status: 'finalizado'
         });
-        
+
         console.log(`📊 Encontrados ${finishedEvents.length} eventos finalizados`);
-        
+
         if (finishedEvents.length === 0) {
-            return res.status(404).json({ 
+            return res.status(404).json({
                 error: 'Nenhum evento finalizado encontrado para gerar rota',
                 message: 'Finalize um evento primeiro antes de criar uma rota'
             });
         }
-        
+
         // Calcular total de resíduos
         const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || e.wasteCollected || 0), 0);
-        
+
         // Criar a rota
         const newRoute = new Route({
             name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
@@ -792,12 +797,12 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
                 eventLocation: finishedEvents[0].city || finishedEvents[0].location || 'Local não informado'
             }
         });
-        
+
         await newRoute.save();
         console.log(`✅ Rota criada com sucesso! ID: ${newRoute._id}`);
         console.log(`📊 Total de resíduos: ${totalWaste} kg`);
         console.log(`📋 Eventos incluídos: ${finishedEvents.length}`);
-        
+
         // Atualizar os eventos marcando que têm coleta agendada
         for (const event of finishedEvents) {
             event.status = 'coleta_agendada';
@@ -806,16 +811,16 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
             await event.save();
             console.log(`✅ Evento atualizado: ${event.name} -> coleta_agendada`);
         }
-        
+
         // Criar notificação
         await Notification.createRouteNotification(req.userId, newRoute.name);
-        
+
         // Emitir via socket
         const io = req.app.get('io');
         if (io) io.emit('route-changed', { type: 'new', route: newRoute, timestamp: new Date() });
-        
+
         res.status(201).json(newRoute);
-        
+
     } catch (error) {
         console.error('❌ Erro ao gerar rota a partir de eventos:', error);
         res.status(500).json({ error: error.message });
@@ -827,18 +832,18 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const { name, status } = req.body;
         const route = await Route.findById(req.params.id);
-        
+
         if (!route) {
             return res.status(404).json({ error: 'Rota não encontrada' });
         }
-        
+
         if (route.userId.toString() !== req.userId) {
             return res.status(403).json({ error: 'Acesso não autorizado' });
         }
-        
+
         if (name) route.name = name;
         if (status) route.status = status;
-        
+
         await route.save();
         console.log(`✅ Rota atualizada: ${route.name}`);
         res.json(route);
@@ -852,15 +857,15 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
 app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const route = await Route.findById(req.params.id);
-        
+
         if (!route) {
             return res.status(404).json({ error: 'Rota não encontrada' });
         }
-        
+
         if (route.userId.toString() !== req.userId) {
             return res.status(403).json({ error: 'Acesso não autorizado' });
         }
-        
+
         await route.deleteOne();
         console.log(`🗑️ Rota removida: ${route.name}`);
         res.json({ message: 'Rota removida com sucesso' });
@@ -875,7 +880,7 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
         const collectionData = { ...req.body, userId: req.userId };
         const point = await CollectionPoint.findOne({ _id: collectionData.collectionPointId, userId: req.userId });
-        
+
         if (!point) return res.status(404).json({ error: 'Ponto de coleta não encontrado' });
 
         const collection = new Collection(collectionData);
@@ -883,9 +888,9 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
 
         point.currentVolume += collectionData.wasteVolume;
         await point.save();
-        
+
         await Notification.createCollectionNotification(req.userId, point.name, collectionData.wasteVolume);
-        
+
         const io = req.app.get('io');
         if (io) io.emit('collection-update', { pointId: point._id, pointName: point.name, volume: collectionData.wasteVolume, timestamp: new Date() });
 
@@ -949,7 +954,7 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
         ]);
 
         const totalWaste = result[0]?.totalWaste || 0;
-        
+
         const treesSaved = Math.floor(totalWaste * 0.02);
         const waterSaved = totalWaste * 5;
         const energySaved = totalWaste * 0.35;
@@ -1097,7 +1102,7 @@ app.get('/api/docs', (req, res) => {
 
 // ========== TRATAMENTO DE ERROS ==========
 app.use('*', (req, res) => {
-    res.status(404).json({ 
+    res.status(404).json({
         error: 'Rota não encontrada',
         path: req.originalUrl,
         method: req.method,
@@ -1107,10 +1112,10 @@ app.use('*', (req, res) => {
 
 app.use((err, req, res, next) => {
     console.error('❌ Erro global:', err.stack);
-    
+
     const statusCode = err.statusCode || 500;
     const message = isProduction ? 'Ocorreu um erro interno no servidor' : err.message;
-    
+
     res.status(statusCode).json({ error: message, ...(isProduction ? {} : { stack: err.stack }) });
 });
 
