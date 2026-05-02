@@ -30,6 +30,7 @@ const AnalysisHistory = require('./src/models/AnalysisHistory');
 
 // Importar serviço Gemini (seu modelo completo)
 const geminiAnalysisService = require('./services/geminiAnalysisService');
+const visionAnalysis = require('./services/visionAnalysis');
 
 // Carregar variáveis de ambiente
 dotenv.config();

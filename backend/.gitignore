@@ -101,4 +101,5 @@ typings/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db
+Thumbs.dbecoroute-vision-key.json
+*.json
