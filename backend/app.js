@@ -8,6 +8,9 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 // Importar modelos e serviços
 const User = require('./src/models/User');
@@ -21,6 +24,12 @@ const aiRoutes = require('./src/routes/ai.routes');
 
 // Importar rota de Eventos
 const eventsRoutes = require('./src/routes/events.routes');
+
+// Importar modelo de histórico de análises
+const AnalysisHistory = require('./src/models/AnalysisHistory');
+
+// Importar serviço Gemini (seu modelo completo)
+const geminiAnalysisService = require('./services/geminiAnalysisService');
 
 // Carregar variáveis de ambiente
 dotenv.config();
@@ -258,7 +267,6 @@ const routeSchema = new mongoose.Schema({
     vehicleType: { type: String, default: 'truck' },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     completedAt: Date,
-    // NOVOS CAMPOS ADICIONADOS PARA INFORMAÇÕES DE EVENTOS
     eventsSummary: [{
         eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
         eventName: String,
@@ -326,6 +334,18 @@ const authorize = (...roles) => {
 // ========== FUNÇÕES AUXILIARES ==========
 const generateVerificationCode = () => {
     return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Extrair resumo da análise para salvar no histórico
+const extractSummaryFromAnalysis = (analysis) => {
+    return {
+        gravidade: analysis.resumo?.gravidade || analysis.impactos?.nivel_critico || 'moderada',
+        prioridade: analysis.recomendacoes?.prioridade || 'media',
+        taxa_reciclabilidade: analysis.reciclabilidade?.taxa_reciclavel_percentual ||
+            analysis.reciclagem?.taxa_reciclavel || 50,
+        impacto_ambiental: analysis.metricas?.indice_impacto_ambiental ||
+            analysis.metricas?.indice_impacto || 50
+    };
 };
 
 // ========== ROTAS DE AUTENTICAÇÃO ==========
@@ -739,15 +759,12 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
     }
 });
 
-// ========== NOVO ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS FINALIZADOS ==========
 app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
     try {
         console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
 
-        // Importar o modelo de Eventos
         const Event = require('./src/models/Events');
 
-        // Buscar eventos do usuário com status 'finalizado'
         const finishedEvents = await Event.find({
             userId: req.userId,
             status: 'finalizado'
@@ -762,10 +779,8 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
             });
         }
 
-        // Calcular total de resíduos
         const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || e.wasteCollected || 0), 0);
 
-        // Criar a rota
         const newRoute = new Route({
             name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
             description: `Rota gerada automaticamente para coleta de resíduos de ${finishedEvents.length} evento(s)`,
@@ -803,7 +818,6 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
         console.log(`📊 Total de resíduos: ${totalWaste} kg`);
         console.log(`📋 Eventos incluídos: ${finishedEvents.length}`);
 
-        // Atualizar os eventos marcando que têm coleta agendada
         for (const event of finishedEvents) {
             event.status = 'coleta_agendada';
             event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -812,10 +826,8 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
             console.log(`✅ Evento atualizado: ${event.name} -> coleta_agendada`);
         }
 
-        // Criar notificação
         await Notification.createRouteNotification(req.userId, newRoute.name);
 
-        // Emitir via socket
         const io = req.app.get('io');
         if (io) io.emit('route-changed', { type: 'new', route: newRoute, timestamp: new Date() });
 
@@ -827,7 +839,6 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
     }
 });
 
-// PUT - Atualizar rota
 app.put('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const { name, status } = req.body;
@@ -853,7 +864,6 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// DELETE - Remover rota
 app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const route = await Route.findById(req.params.id);
@@ -982,6 +992,342 @@ app.use('/api/ai', aiRoutes);
 // ========== ROTAS DE EVENTOS ==========
 app.use('/api/events', eventsRoutes);
 
+// ========== ROTAS GEMINI (ANÁLISE DETALHADA COM IA) ==========
+
+// Configuração do multer para upload de imagens
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, uploadDir),
+        filename: (req, file, cb) => {
+            const unique = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            cb(null, `gemini-${unique}${path.extname(file.originalname)}`);
+        }
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowed = /jpeg|jpg|png|gif|webp/;
+        const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+        const mime = allowed.test(file.mimetype);
+        cb(null, ext && mime);
+    }
+});
+
+// Rota para análise com Gemini (enviando imagem em base64)
+app.post('/api/gemini/analyze', authenticateToken, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { imageBase64, context } = req.body;
+
+        if (!imageBase64) {
+            return res.status(400).json({
+                success: false,
+                error: 'Nenhuma imagem fornecida. Envie imageBase64 no body'
+            });
+        }
+
+        console.log(`🤖 Iniciando análise Gemini para usuário ${req.userId}`);
+
+        // Limpar o base64 se tiver prefixo data:image
+        let cleanBase64 = imageBase64;
+        if (imageBase64.includes(',')) {
+            cleanBase64 = imageBase64.split(',')[1];
+        }
+
+        // Chamar o serviço Gemini
+        const analysis = await geminiAnalysisService.analyzeImage(cleanBase64, context || {});
+        const readableReport = geminiAnalysisService.generateReadableReport(analysis);
+
+        // Extrair resumo
+        const summary = extractSummaryFromAnalysis(analysis);
+
+        // Salvar no histórico
+        const historyEntry = new AnalysisHistory({
+            userId: req.userId,
+            imageName: context?.imageName || 'análise-base64',
+            imageSize: Math.round(cleanBase64.length * 0.75), // Estimativa aproximada
+            location: context?.location ? {
+                address: context.location,
+                city: context.city,
+                state: context.state
+            } : undefined,
+            analysis: analysis,
+            readableReport: readableReport,
+            summary: summary,
+            metadata: {
+                analyzedAt: new Date(),
+                model: 'gemini-1.5-flash',
+                processingTimeMs: Date.now() - startTime
+            }
+        });
+
+        await historyEntry.save();
+        console.log(`✅ Análise salva no histórico com ID: ${historyEntry._id}`);
+
+        res.json({
+            success: true,
+            analysisId: historyEntry._id,
+            analysis,
+            readableReport,
+            metadata: {
+                analyzedAt: new Date().toISOString(),
+                model: 'gemini-1.5-flash',
+                user: req.user.name,
+                processingTimeMs: Date.now() - startTime
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Erro na análise Gemini:', error);
+
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Erro ao processar análise com Gemini',
+            fallback: true
+        });
+    }
+});
+
+// Rota para análise com upload de arquivo (multipart/form-data)
+app.post('/api/gemini/analyze-upload', authenticateToken, upload.single('image'), async (req, res) => {
+    const startTime = Date.now();
+    let tempFile = req.file;
+
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                error: 'Envie uma imagem (campo "image")'
+            });
+        }
+
+        console.log(`🤖 Iniciando análise Gemini com upload para usuário ${req.userId}`);
+        console.log(`📁 Arquivo: ${req.file.originalname} (${req.file.size} bytes)`);
+
+        // Ler o arquivo e converter para base64
+        const imageBuffer = fs.readFileSync(req.file.path);
+        const imageBase64 = imageBuffer.toString('base64');
+
+        let context = {};
+        try {
+            if (req.body.context) context = JSON.parse(req.body.context);
+        } catch (e) {
+            console.warn('Contexto inválido, usando default');
+        }
+
+        // Chamar o serviço Gemini
+        const analysis = await geminiAnalysisService.analyzeImage(imageBase64, context);
+        const readableReport = geminiAnalysisService.generateReadableReport(analysis);
+
+        // Extrair resumo
+        const summary = extractSummaryFromAnalysis(analysis);
+
+        // Salvar no histórico
+        const historyEntry = new AnalysisHistory({
+            userId: req.userId,
+            imageName: req.file.originalname,
+            imageSize: req.file.size,
+            location: context?.location ? {
+                address: context.location,
+                city: context.city,
+                state: context.state
+            } : undefined,
+            analysis: analysis,
+            readableReport: readableReport,
+            summary: summary,
+            metadata: {
+                analyzedAt: new Date(),
+                model: 'gemini-1.5-flash',
+                processingTimeMs: Date.now() - startTime
+            }
+        });
+
+        await historyEntry.save();
+        console.log(`✅ Análise salva no histórico com ID: ${historyEntry._id}`);
+
+        // Limpar arquivo temporário
+        if (tempFile && fs.existsSync(tempFile.path)) {
+            fs.unlinkSync(tempFile.path);
+        }
+
+        res.json({
+            success: true,
+            analysisId: historyEntry._id,
+            analysis,
+            readableReport,
+            metadata: {
+                fileName: req.file.originalname,
+                fileSize: req.file.size,
+                analyzedAt: new Date().toISOString(),
+                user: req.user.name,
+                processingTimeMs: Date.now() - startTime
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Erro na análise Gemini:', error);
+
+        if (tempFile && fs.existsSync(tempFile.path)) {
+            fs.unlinkSync(tempFile.path);
+        }
+
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Erro ao processar análise com Gemini'
+        });
+    }
+});
+
+// Rota para verificar status do Gemini
+app.get('/api/gemini/status', authenticateToken, async (req, res) => {
+    const isAvailable = !!process.env.GEMINI_API_KEY;
+
+    res.json({
+        available: isAvailable,
+        message: isAvailable ?
+            '✅ Gemini API configurada e pronta para uso' :
+            '❌ Gemini API não configurada. Adicione GEMINI_API_KEY ao arquivo .env',
+        model: isAvailable ? 'gemini-1.5-flash' : null
+    });
+});
+
+// ========== ROTAS DE HISTÓRICO DE ANÁLISES ==========
+
+// GET /api/analysis/history - Listar histórico de análises do usuário
+app.get('/api/analysis/history', authenticateToken, async (req, res) => {
+    try {
+        const { limit = 20, page = 1 } = req.query;
+
+        const analyses = await AnalysisHistory.find({ userId: req.userId })
+            .sort({ createdAt: -1 })
+            .limit(parseInt(limit))
+            .skip((parseInt(page) - 1) * parseInt(limit))
+            .select('imageName createdAt summary metadata.shared imageSize');
+
+        const total = await AnalysisHistory.countDocuments({ userId: req.userId });
+
+        res.json({
+            success: true,
+            analyses,
+            pagination: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                pages: Math.ceil(total / parseInt(limit))
+            }
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar histórico:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// GET /api/analysis/:id - Buscar análise específica
+app.get('/api/analysis/:id', authenticateToken, async (req, res) => {
+    try {
+        const analysis = await AnalysisHistory.findOne({
+            _id: req.params.id,
+            userId: req.userId
+        });
+
+        if (!analysis) {
+            return res.status(404).json({
+                success: false,
+                error: 'Análise não encontrada'
+            });
+        }
+
+        res.json({ success: true, analysis });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// POST /api/analysis/:id/share - Compartilhar análise (token público)
+app.post('/api/analysis/:id/share', authenticateToken, async (req, res) => {
+    try {
+        const analysis = await AnalysisHistory.findOne({
+            _id: req.params.id,
+            userId: req.userId
+        });
+
+        if (!analysis) {
+            return res.status(404).json({
+                success: false,
+                error: 'Análise não encontrada'
+            });
+        }
+
+        const token = analysis.generateShareToken();
+        await analysis.save();
+
+        const shareUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/shared-analysis/${token}`;
+
+        res.json({
+            success: true,
+            shareToken: token,
+            shareUrl
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// GET /api/analysis/shared/:token - Visualizar análise compartilhada (público)
+app.get('/api/analysis/shared/:token', async (req, res) => {
+    try {
+        const analysis = await AnalysisHistory.findOne({
+            shareToken: req.params.token,
+            shared: true
+        });
+
+        if (!analysis) {
+            return res.status(404).json({
+                success: false,
+                error: 'Análise não encontrada ou não está compartilhada'
+            });
+        }
+
+        res.json({
+            success: true,
+            analysis: {
+                readableReport: analysis.readableReport,
+                summary: analysis.summary,
+                createdAt: analysis.createdAt,
+                imageName: analysis.imageName
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// DELETE /api/analysis/:id - Deletar análise do histórico
+app.delete('/api/analysis/:id', authenticateToken, async (req, res) => {
+    try {
+        const analysis = await AnalysisHistory.findOneAndDelete({
+            _id: req.params.id,
+            userId: req.userId
+        });
+
+        if (!analysis) {
+            return res.status(404).json({
+                success: false,
+                error: 'Análise não encontrada'
+            });
+        }
+
+        res.json({ success: true, message: 'Análise removida com sucesso' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ========== FIM DAS ROTAS DE HISTÓRICO ==========
+
 // ========== ROTAS PÚBLICAS ==========
 app.get('/', (req, res) => {
     res.json({
@@ -990,6 +1336,7 @@ app.get('/', (req, res) => {
         status: 'online',
         ambiente: process.env.NODE_ENV || 'desenvolvimento',
         database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
+        gemini: !!process.env.GEMINI_API_KEY ? 'configurado' : 'não configurado',
         socket: 'disponível na mesma porta do servidor',
         documentacao: '/api/docs',
         endpoints: {
@@ -1018,6 +1365,18 @@ app.get('/', (req, res) => {
                 criar: 'POST /api/events (auth)',
                 finalizar: 'POST /api/events/:id/finish (auth)',
                 gerarRotas: 'POST /api/events/generate-routes (auth)'
+            },
+            gemini: {
+                analise: 'POST /api/gemini/analyze (base64)',
+                analiseUpload: 'POST /api/gemini/analyze-upload (multipart/form-data)',
+                status: 'GET /api/gemini/status (auth)'
+            },
+            analysis: {
+                historico: 'GET /api/analysis/history (auth)',
+                buscar: 'GET /api/analysis/:id (auth)',
+                compartilhar: 'POST /api/analysis/:id/share (auth)',
+                visualizarCompartilhado: 'GET /api/analysis/shared/:token',
+                deletar: 'DELETE /api/analysis/:id (auth)'
             }
         },
         timestamp: new Date().toISOString()
@@ -1029,6 +1388,7 @@ app.get('/api/health', (req, res) => {
         status: 'OK',
         ambiente: process.env.NODE_ENV || 'desenvolvimento',
         database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado',
+        gemini: !!process.env.GEMINI_API_KEY ? 'disponível' : 'não configurado',
         socket: 'rodando na mesma porta',
         uptime: process.uptime(),
         memoria: process.memoryUsage(),
@@ -1066,6 +1426,26 @@ app.get('/api/docs', (req, res) => {
                 'PATCH /api/messages/:id/read': 'Marcar mensagem como lida'
             },
             ai: { 'POST /api/ai/analyze': { descricao: 'Analisar imagem e detectar resíduos', auth: true, body: { image: 'file (multipart/form-data)' } } },
+            gemini: {
+                'POST /api/gemini/analyze': {
+                    descricao: 'Análise detalhada com Gemini (enviar base64)',
+                    auth: true,
+                    body: { imageBase64: 'string (base64)', context: 'object (opcional)' }
+                },
+                'POST /api/gemini/analyze-upload': {
+                    descricao: 'Análise detalhada com Gemini (upload de arquivo)',
+                    auth: true,
+                    body: { image: 'file (multipart/form-data)', context: 'json (opcional)' }
+                },
+                'GET /api/gemini/status': { descricao: 'Verificar status do Gemini', auth: true }
+            },
+            analysis: {
+                'GET /api/analysis/history': { descricao: 'Listar histórico de análises', auth: true },
+                'GET /api/analysis/:id': { descricao: 'Buscar análise específica', auth: true },
+                'POST /api/analysis/:id/share': { descricao: 'Compartilhar análise', auth: true },
+                'GET /api/analysis/shared/:token': { descricao: 'Visualizar análise compartilhada', auth: false },
+                'DELETE /api/analysis/:id': { descricao: 'Deletar análise', auth: true }
+            },
             eventos: {
                 'POST /api/events': 'Criar evento',
                 'GET /api/events': 'Listar eventos',
@@ -1095,6 +1475,11 @@ app.get('/api/docs', (req, res) => {
                 url: '/api/routes/generate-from-events',
                 metodo: 'POST',
                 descricao: 'Gera uma rota automaticamente a partir de eventos finalizados'
+            },
+            gemini: {
+                url: '/api/gemini/analyze',
+                metodo: 'POST',
+                body: { imageBase64: 'data:image/jpeg;base64,...', context: { location: 'Parque Ibirapuera', areaType: 'parque' } }
             }
         }
     });
@@ -1128,8 +1513,15 @@ server.listen(PORT, () => {
     console.log(`🔌 Socket.IO disponível na mesma porta (${PORT})`);
     console.log(`📍 URL: http://localhost:${PORT}`);
     console.log(`📚 Documentação: http://localhost:${PORT}/api/docs`);
-    console.log(`🤖 IA Service: http://ai-service:5001`);
+    console.log(`🤖 IA Service (simples): http://ai-service:5001`);
+    console.log(`🔍 Gemini AI: ${!!process.env.GEMINI_API_KEY ? '✅ disponível' : '❌ não configurado (adicione GEMINI_API_KEY)'}`);
+    console.log(`📊 Histórico de análises: ${mongoose.connection.readyState === 1 ? '✅ ativo' : '⚠️ disponível apenas com banco'}`);
     console.log(`🚗 POST /api/routes/generate-from-events - Disponível`);
+    console.log(`🤖 POST /api/gemini/analyze - Análise detalhada com Gemini (base64)`);
+    console.log(`📁 POST /api/gemini/analyze-upload - Análise detalhada com Gemini (upload)`);
+    console.log(`📋 GET /api/analysis/history - Histórico de análises`);
+    console.log(`🔗 POST /api/analysis/:id/share - Compartilhar análise`);
+    console.log(`✅ Servidor pronto!`);
     console.log('=================================\n');
 });
 
