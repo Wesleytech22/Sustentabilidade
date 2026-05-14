@@ -258,7 +258,6 @@ const routeSchema = new mongoose.Schema({
     vehicleType: { type: String, default: 'truck' },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     completedAt: Date,
-    // NOVOS CAMPOS ADICIONADOS PARA INFORMAÇÕES DE EVENTOS
     eventsSummary: [{
         eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
         eventName: String,
@@ -578,6 +577,51 @@ app.get('/api/points', authenticateToken, async (req, res) => {
     }
 });
 
+// PUT - Atualizar ponto de coleta
+app.put('/api/points/:id', authenticateToken, async (req, res) => {
+    try {
+        console.log('✏️ Atualizando ponto ID:', req.params.id);
+        console.log('📦 Dados recebidos:', req.body);
+
+        const point = await CollectionPoint.findOne({ _id: req.params.id, userId: req.userId });
+
+        if (!point) {
+            return res.status(404).json({ error: 'Ponto de coleta não encontrado' });
+        }
+
+        // Atualizar campos permitidos
+        const allowedFields = ['name', 'address', 'neighborhood', 'city', 'state', 'latitude', 'longitude', 'capacity', 'wasteTypes', 'status'];
+
+        for (const field of allowedFields) {
+            if (req.body[field] !== undefined) {
+                if (field === 'capacity') {
+                    point[field] = Number(req.body[field]);
+                } else if (field === 'latitude' || field === 'longitude') {
+                    point[field] = req.body[field] ? Number(req.body[field]) : null;
+                } else if (field === 'wasteTypes') {
+                    point[field] = req.body[field];
+                } else {
+                    point[field] = req.body[field];
+                }
+            }
+        }
+
+        await point.save();
+        console.log(`✅ Ponto atualizado: ${point.name}`);
+
+        res.json({ point, message: 'Ponto de coleta atualizado com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao atualizar ponto:', error);
+
+        if (error.name === 'ValidationError') {
+            const errors = Object.values(error.errors).map(err => err.message);
+            return res.status(400).json({ error: errors.join(', ') });
+        }
+
+        res.status(500).json({ error: error.message || 'Erro ao atualizar ponto de coleta' });
+    }
+});
+
 app.delete('/api/points/:id', authenticateToken, async (req, res) => {
     try {
         console.log('🗑️ Tentando deletar ponto ID:', req.params.id);
@@ -739,94 +783,6 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
     }
 });
 
-// ========== NOVO ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS FINALIZADOS ==========
-app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
-    try {
-        console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
-
-        // Importar o modelo de Eventos
-        const Event = require('./src/models/Events');
-
-        // Buscar eventos do usuário com status 'finalizado'
-        const finishedEvents = await Event.find({
-            userId: req.userId,
-            status: 'finalizado'
-        });
-
-        console.log(`📊 Encontrados ${finishedEvents.length} eventos finalizados`);
-
-        if (finishedEvents.length === 0) {
-            return res.status(404).json({
-                error: 'Nenhum evento finalizado encontrado para gerar rota',
-                message: 'Finalize um evento primeiro antes de criar uma rota'
-            });
-        }
-
-        // Calcular total de resíduos
-        const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || e.wasteCollected || 0), 0);
-
-        // Criar a rota
-        const newRoute = new Route({
-            name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
-            description: `Rota gerada automaticamente para coleta de resíduos de ${finishedEvents.length} evento(s)`,
-            date: new Date(),
-            points: finishedEvents.map((event, index) => ({
-                pointId: event._id,
-                order: index + 1,
-                estimatedVolume: event.estimatedWaste || event.wasteCollected || 500,
-                distance: 0,
-                duration: 0
-            })),
-            totalDistance: 0,
-            totalWaste: totalWaste,
-            fuelConsumption: 0,
-            carbonFootprint: 0,
-            vehicleType: 'truck',
-            status: 'PLANNED',
-            userId: req.userId,
-            eventsSummary: finishedEvents.map(event => ({
-                eventId: event._id,
-                eventName: event.name,
-                eventDate: event.startDate || event.date,
-                wasteCollected: event.estimatedWaste || event.wasteCollected || 0
-            })),
-            eventInfo: {
-                eventId: finishedEvents[0]._id,
-                eventName: finishedEvents[0].name,
-                eventDate: finishedEvents[0].startDate || finishedEvents[0].date,
-                eventLocation: finishedEvents[0].city || finishedEvents[0].location || 'Local não informado'
-            }
-        });
-
-        await newRoute.save();
-        console.log(`✅ Rota criada com sucesso! ID: ${newRoute._id}`);
-        console.log(`📊 Total de resíduos: ${totalWaste} kg`);
-        console.log(`📋 Eventos incluídos: ${finishedEvents.length}`);
-
-        // Atualizar os eventos marcando que têm coleta agendada
-        for (const event of finishedEvents) {
-            event.status = 'coleta_agendada';
-            event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-            event.routeId = newRoute._id;
-            await event.save();
-            console.log(`✅ Evento atualizado: ${event.name} -> coleta_agendada`);
-        }
-
-        // Criar notificação
-        await Notification.createRouteNotification(req.userId, newRoute.name);
-
-        // Emitir via socket
-        const io = req.app.get('io');
-        if (io) io.emit('route-changed', { type: 'new', route: newRoute, timestamp: new Date() });
-
-        res.status(201).json(newRoute);
-
-    } catch (error) {
-        console.error('❌ Erro ao gerar rota a partir de eventos:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // PUT - Atualizar rota
 app.put('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
@@ -875,6 +831,87 @@ app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
     }
 });
 
+// ========== NOVO ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS FINALIZADOS ==========
+app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
+    try {
+        console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
+
+        const Event = require('./src/models/Events');
+
+        const finishedEvents = await Event.find({
+            userId: req.userId,
+            status: 'finalizado'
+        });
+
+        console.log(`📊 Encontrados ${finishedEvents.length} eventos finalizados`);
+
+        if (finishedEvents.length === 0) {
+            return res.status(404).json({
+                error: 'Nenhum evento finalizado encontrado para gerar rota',
+                message: 'Finalize um evento primeiro antes de criar uma rota'
+            });
+        }
+
+        const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || e.wasteCollected || 0), 0);
+
+        const newRoute = new Route({
+            name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
+            description: `Rota gerada automaticamente para coleta de resíduos de ${finishedEvents.length} evento(s)`,
+            date: new Date(),
+            points: finishedEvents.map((event, index) => ({
+                pointId: event._id,
+                order: index + 1,
+                estimatedVolume: event.estimatedWaste || event.wasteCollected || 500,
+                distance: 0,
+                duration: 0
+            })),
+            totalDistance: 0,
+            totalWaste: totalWaste,
+            fuelConsumption: 0,
+            carbonFootprint: 0,
+            vehicleType: 'truck',
+            status: 'PLANNED',
+            userId: req.userId,
+            eventsSummary: finishedEvents.map(event => ({
+                eventId: event._id,
+                eventName: event.name,
+                eventDate: event.startDate || event.date,
+                wasteCollected: event.estimatedWaste || event.wasteCollected || 0
+            })),
+            eventInfo: {
+                eventId: finishedEvents[0]._id,
+                eventName: finishedEvents[0].name,
+                eventDate: finishedEvents[0].startDate || finishedEvents[0].date,
+                eventLocation: finishedEvents[0].city || finishedEvents[0].location || 'Local não informado'
+            }
+        });
+
+        await newRoute.save();
+        console.log(`✅ Rota criada com sucesso! ID: ${newRoute._id}`);
+        console.log(`📊 Total de resíduos: ${totalWaste} kg`);
+        console.log(`📋 Eventos incluídos: ${finishedEvents.length}`);
+
+        for (const event of finishedEvents) {
+            event.status = 'coleta_agendada';
+            event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+            event.routeId = newRoute._id;
+            await event.save();
+            console.log(`✅ Evento atualizado: ${event.name} -> coleta_agendada`);
+        }
+
+        await Notification.createRouteNotification(req.userId, newRoute.name);
+
+        const io = req.app.get('io');
+        if (io) io.emit('route-changed', { type: 'new', route: newRoute, timestamp: new Date() });
+
+        res.status(201).json(newRoute);
+
+    } catch (error) {
+        console.error('❌ Erro ao gerar rota a partir de eventos:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ========== ROTAS DE COLETAS ==========
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
@@ -908,38 +945,87 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
     }
 });
 
-// ========== ROTAS DE DASHBOARD ==========
 app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
-        const [points, routes, collections, impact, unreadNotifications] = await Promise.all([
-            CollectionPoint.countDocuments({ userId: req.userId }),
-            Route.countDocuments({ userId: req.userId, status: 'COMPLETED' }),
-            Collection.find().populate({ path: 'collectionPointId', match: { userId: req.userId } }),
-            Collection.aggregate([
-                { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-                { $unwind: '$point' },
-                { $match: { 'point.userId': req.user._id } },
-                { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' }, avgCollection: { $avg: '$wasteVolume' }, totalCollections: { $sum: 1 } } }
-            ]),
-            Notification.countDocuments({ user: req.userId, read: false })
+        console.log(`📊 Buscando stats para usuário: ${req.user.name} (${req.userId})`);
+
+        // Pontos de coleta do usuário
+        const pointsCount = await CollectionPoint.countDocuments({ userId: req.userId });
+
+        // Rotas ativas (PLANNED ou IN_PROGRESS)
+        const routesCount = await Route.countDocuments({
+            userId: req.userId,
+            status: { $in: ['PLANNED', 'IN_PROGRESS'] }
+        });
+
+        // Total de resíduos coletados
+        const collections = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
         ]);
 
-        const totalWaste = impact[0]?.totalWaste || 0;
-        const avgCollection = impact[0]?.avgCollection || 0;
-        const totalCollections = impact[0]?.totalCollections || 0;
+        const totalWaste = collections[0]?.totalWaste || 0;
+        const totalCarbon = Math.floor(totalWaste * 0.13);
 
-        const treesSaved = Math.floor(totalWaste * 0.02);
-        const waterSaved = totalWaste * 5;
-        const energySaved = totalWaste * 0.35;
-        const carbonSaved = totalWaste * 0.13;
+        console.log(`📊 Resultado:`, { pointsCount, routesCount, totalWaste, totalCarbon });
 
         res.json({
-            points, routes, totalWaste, avgCollection, totalCollections, unreadNotifications,
-            impact: { treesSaved, waterSaved: Math.floor(waterSaved), energySaved: Math.floor(energySaved), carbonSaved: Math.floor(carbonSaved) }
+            pointsCount,
+            routesCount,
+            totalWaste,
+            totalCarbon
         });
     } catch (error) {
-        console.error('❌ Erro ao carregar stats:', error);
+        console.error('❌ Erro ao carregar stats do dashboard:', error);
         res.status(500).json({ error: 'Erro ao carregar estatísticas' });
+    }
+});
+
+app.get('/api/dashboard/waste-by-type', authenticateToken, async (req, res) => {
+    try {
+        console.log(`📊 Buscando resíduos por tipo para usuário: ${req.user.name}`);
+
+        const wasteByType = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            {
+                $group: {
+                    _id: { $ifNull: ['$wasteType', 'outros'] },
+                    total: { $sum: '$wasteVolume' }
+                }
+            },
+            { $sort: { total: -1 } }
+        ]);
+
+        const typeLabels = {
+            'plastico': 'Plástico',
+            'papel': 'Papel',
+            'vidro': 'Vidro',
+            'metal': 'Metal',
+            'organico': 'Orgânico',
+            'eletronico': 'Eletrônico',
+            'outros': 'Outros'
+        };
+
+        const labels = wasteByType.map(item => typeLabels[item._id] || item._id);
+        const data = wasteByType.map(item => item.total);
+
+        console.log(`📊 Tipos encontrados:`, labels);
+
+        // Se não houver dados, retorna array vazio
+        res.json({
+            labels: labels.length ? labels : ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+            data: data.length ? data : [0, 0, 0, 0, 0]
+        });
+    } catch (error) {
+        console.error('❌ Erro ao carregar resíduos por tipo:', error);
+        res.json({
+            labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+            data: [0, 0, 0, 0, 0]
+        });
     }
 });
 
@@ -976,6 +1062,150 @@ app.get('/api/impact', authenticateToken, async (req, res) => {
     }
 });
 
+// GET /api/dashboard/monthly-impact - Impacto mensal
+app.get('/api/dashboard/monthly-impact', authenticateToken, async (req, res) => {
+    try {
+        console.log(`📊 Buscando impacto mensal para usuário: ${req.user.name}`);
+
+        const monthlyImpact = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
+                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
+                }
+            },
+            { $sort: { _id: 1 } },
+            { $limit: 12 }
+        ]);
+
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+        const labels = monthlyImpact.map(item => {
+            const month = parseInt(item._id.split('-')[1]) - 1;
+            return monthNames[month];
+        });
+
+        const data = monthlyImpact.map(item => Math.round(item.carbon));
+
+        console.log(`📊 Impacto mensal:`, { labels, data });
+
+        // Se não houver dados, retorna meses atuais com zeros
+        if (labels.length === 0) {
+            const currentMonth = new Date().getMonth();
+            const last6Months = [];
+            const zeros = [];
+            for (let i = 5; i >= 0; i--) {
+                const monthIndex = (currentMonth - i + 12) % 12;
+                last6Months.push(monthNames[monthIndex]);
+                zeros.push(0);
+            }
+            res.json({ labels: last6Months, data: zeros });
+        } else {
+            res.json({ labels, data });
+        }
+    } catch (error) {
+        console.error('❌ Erro ao carregar impacto mensal:', error);
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        const currentMonth = new Date().getMonth();
+        const last6Months = [];
+        for (let i = 5; i >= 0; i--) {
+            const monthIndex = (currentMonth - i + 12) % 12;
+            last6Months.push(monthNames[monthIndex]);
+        }
+        res.json({ labels: last6Months, data: [0, 0, 0, 0, 0, 0] });
+    }
+});
+
+// GET /api/dashboard/recent-activities - Atividades recentes
+app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) => {
+    try {
+        const limit = 10;
+        const activities = [];
+
+        // Buscar coletas recentes
+        const recentCollections = await Collection.find()
+            .populate({ path: 'collectionPointId', match: { userId: req.user._id } })
+            .sort({ createdAt: -1 })
+            .limit(limit);
+
+        for (const collection of recentCollections) {
+            if (collection.collectionPointId) {
+                activities.push({
+                    id: collection._id,
+                    type: 'collection',
+                    icon: 'fa-recycle',
+                    title: `${collection.wasteVolume} kg coletados em ${collection.collectionPointId.name}`,
+                    date: collection.createdAt,
+                    timeAgo: getTimeAgo(collection.createdAt)
+                });
+            }
+        }
+
+        // Buscar rotas recentes
+        const recentRoutes = await Route.find({ userId: req.user._id })
+            .sort({ createdAt: -1 })
+            .limit(limit);
+
+        for (const route of recentRoutes) {
+            const statusText = route.status === 'COMPLETED' ? 'concluída' :
+                route.status === 'IN_PROGRESS' ? 'iniciada' : 'criada';
+            activities.push({
+                id: route._id,
+                type: 'route',
+                icon: 'fa-route',
+                title: `Rota "${route.name}" ${statusText}`,
+                date: route.createdAt,
+                timeAgo: getTimeAgo(route.createdAt)
+            });
+        }
+
+        // Buscar pontos criados recentemente
+        const recentPoints = await CollectionPoint.find({ userId: req.user._id })
+            .sort({ createdAt: -1 })
+            .limit(limit);
+
+        for (const point of recentPoints) {
+            activities.push({
+                id: point._id,
+                type: 'point',
+                icon: 'fa-map-marker-alt',
+                title: `Ponto de coleta "${point.name}" criado`,
+                date: point.createdAt,
+                timeAgo: getTimeAgo(point.createdAt)
+            });
+        }
+
+        // Ordenar por data (mais recente primeiro)
+        activities.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        console.log(`📊 Atividades recentes: ${activities.length} encontradas`);
+
+        res.json({ activities: activities.slice(0, limit) });
+    } catch (error) {
+        console.error('❌ Erro ao carregar atividades recentes:', error);
+        res.json({ activities: [] });
+    }
+});
+
+// Função auxiliar para calcular tempo relativo
+function getTimeAgo(date) {
+    const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+    if (seconds < 60) return 'Agora mesmo';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `Há ${minutes} ${minutes === 1 ? 'minuto' : 'minutos'}`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `Há ${hours} ${hours === 1 ? 'hora' : 'horas'}`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `Há ${days} ${days === 1 ? 'dia' : 'dias'}`;
+    const weeks = Math.floor(days / 7);
+    if (weeks < 4) return `Há ${weeks} ${weeks === 1 ? 'semana' : 'semanas'}`;
+    const months = Math.floor(days / 30);
+    return `Há ${months} ${months === 1 ? 'mês' : 'meses'}`;
+}
+
 // ========== ROTAS DE IA ==========
 app.use('/api/ai', aiRoutes);
 
@@ -1002,11 +1232,14 @@ app.get('/', (req, res) => {
             pontos: {
                 listar: 'GET /api/points (auth)',
                 criar: 'POST /api/points (auth)',
+                editar: 'PUT /api/points/:id (auth)',
                 deletar: 'DELETE /api/points/:id (auth)'
             },
             rotas: {
                 listar: 'GET /api/routes (auth)',
                 criar: 'POST /api/routes (auth)',
+                editar: 'PUT /api/routes/:id (auth)',
+                deletar: 'DELETE /api/routes/:id (auth)',
                 gerarRotas: 'POST /api/routes/generate-from-events (auth)'
             },
             coletas: { registrar: 'POST /api/collections (auth)' },
@@ -1072,12 +1305,18 @@ app.get('/api/docs', (req, res) => {
                 'POST /api/events/:id/finish': 'Finalizar evento e agendar coleta',
                 'POST /api/events/generate-routes': 'Gerar rotas de coleta para eventos finalizados'
             },
+            pontos: {
+                'GET /api/points': 'Listar pontos de coleta',
+                'POST /api/points': 'Criar ponto de coleta',
+                'PUT /api/points/:id': 'Atualizar ponto de coleta',
+                'DELETE /api/points/:id': 'Remover ponto de coleta'
+            },
             rotas: {
                 'GET /api/routes': 'Listar rotas',
                 'POST /api/routes': 'Criar rota manualmente',
-                'POST /api/routes/generate-from-events': 'Gerar rota a partir de eventos finalizados',
                 'PUT /api/routes/:id': 'Atualizar rota',
-                'DELETE /api/routes/:id': 'Remover rota'
+                'DELETE /api/routes/:id': 'Remover rota',
+                'POST /api/routes/generate-from-events': 'Gerar rota a partir de eventos finalizados'
             }
         },
         exemplos: {
@@ -1090,6 +1329,11 @@ app.get('/api/docs', (req, res) => {
                 url: '/api/events',
                 metodo: 'POST',
                 body: { name: 'Show de Rock', type: 'show', address: 'Estádio do Morumbi', city: 'São Paulo', state: 'SP', startDate: '2026-05-01', endDate: '2026-05-01', expectedAttendees: 50000 }
+            },
+            editarPonto: {
+                url: '/api/points/:id',
+                metodo: 'PUT',
+                body: { name: 'Novo Nome', address: 'Novo Endereço', capacity: 3000 }
             },
             gerarRota: {
                 url: '/api/routes/generate-from-events',
@@ -1129,7 +1373,10 @@ server.listen(PORT, () => {
     console.log(`📍 URL: http://localhost:${PORT}`);
     console.log(`📚 Documentação: http://localhost:${PORT}/api/docs`);
     console.log(`🤖 IA Service: http://ai-service:5001`);
-    console.log(`🚗 POST /api/routes/generate-from-events - Disponível`);
+    console.log(`📌 Endpoints disponíveis:`);
+    console.log(`   - PUT /api/points/:id - Editar ponto de coleta`);
+    console.log(`   - PUT /api/routes/:id - Editar rota`);
+    console.log(`   - POST /api/routes/generate-from-events - Gerar rota de eventos`);
     console.log('=================================\n');
 });
 
