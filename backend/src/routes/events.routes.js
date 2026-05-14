@@ -1,344 +1,203 @@
 const express = require('express');
 const router = express.Router();
 const Event = require('../models/Events');
-const externalEventService = require('../../services/externalEventService');
 const jwt = require('jsonwebtoken');
-// NÃO importe Route aqui - será acessado via app.js
 
-// ========== MESMO MIDDLEWARE DO APP.JS ==========
+// Middleware de autenticação
 const authenticateToken = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
-        
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            return res.status(401).json({ error: 'Token não fornecido ou formato inválido' });
+            return res.status(401).json({ error: 'Token não fornecido' });
         }
 
         const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const User = require('../models/User');
         const user = await User.findById(decoded.id).select('-password');
-        
+
         if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
-        if (!user.active) return res.status(401).json({ error: 'Usuário inativo' });
 
         req.user = user;
         req.userId = user._id;
-        req.userRole = user.role;
         next();
     } catch (error) {
-        if (error.name === 'TokenExpiredError') return res.status(401).json({ error: 'Token expirado' });
-        if (error.name === 'JsonWebTokenError') return res.status(401).json({ error: 'Token inválido' });
-        console.error('❌ Erro na autenticação:', error);
-        return res.status(500).json({ error: 'Erro na autenticação' });
+        return res.status(401).json({ error: 'Token inválido' });
     }
 };
 
-// ========== ROTAS ==========
-
-// GET /api/events - Listar eventos
-router.get('/', authenticateToken, async (req, res) => {
-    try {
-        const { status, city } = req.query;
-        const filter = { userId: req.userId };
-        
-        if (status) filter.status = status;
-        if (city) filter.city = city;
-        
-        const events = await Event.find(filter).sort({ startDate: -1 });
-        
-        res.json(events || []);
-    } catch (error) {
-        console.error('❌ Erro ao listar eventos:', error);
-        res.status(500).json({ error: 'Erro ao listar eventos' });
-    }
-});
-
-// POST /api/events - Criar evento
-router.post('/', authenticateToken, async (req, res) => {
-    try {
-        const {
-            name, description, type, address, city, state,
-            startDate, endDate, expectedAttendees, estimatedWaste
-        } = req.body;
-
-        if (!name || !address || !city || !state || !startDate || !endDate || !expectedAttendees) {
-            return res.status(400).json({ 
-                error: 'Campos obrigatórios: name, address, city, state, startDate, endDate, expectedAttendees' 
-            });
-        }
-
-        const event = new Event({
-            name,
-            description: description || '',
-            type: type || 'outro',
-            address,
-            city,
-            state: state.toUpperCase(),
-            startDate: new Date(startDate),
-            endDate: new Date(endDate),
-            expectedAttendees: Number(expectedAttendees),
-            estimatedWaste: estimatedWaste ? Number(estimatedWaste) : Math.floor(Number(expectedAttendees) * 0.5),
-            wasteCollected: 0,
-            userId: req.userId,
-            status: 'agendado'
-        });
-
-        await event.save();
-
-        res.status(201).json({ 
-            success: true, 
-            event, 
-            message: 'Evento criado com sucesso' 
-        });
-    } catch (error) {
-        console.error('❌ Erro ao criar evento:', error);
-        
-        if (error.name === 'ValidationError') {
-            return res.status(400).json({ error: Object.values(error.errors).map(e => e.message).join(', ') });
-        }
-        
-        res.status(500).json({ error: 'Erro interno ao criar evento' });
-    }
-});
-
-// POST /api/events/:id/finish - Finalizar evento
-router.post('/:id/finish', authenticateToken, async (req, res) => {
-    try {
-        const event = await Event.findOne({ _id: req.params.id, userId: req.userId });
-        
-        if (!event) {
-            return res.status(404).json({ error: 'Evento não encontrado' });
-        }
-        
-        if (event.status !== 'agendado' && event.status !== 'em_andamento') {
-            return res.status(400).json({ error: 'Evento não pode ser finalizado' });
-        }
-        
-        event.status = 'finalizado';
-        await event.save();
-        
-        res.json({ success: true, event, message: 'Evento finalizado com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao finalizar evento:', error);
-        res.status(500).json({ error: 'Erro ao finalizar evento' });
-    }
-});
-
-// POST /api/events/generate-routes - VERSÃO SIMPLIFICADA PARA TESTE
-// POST /api/events/generate-routes - VERSÃO COMPLETA
-router.post('/generate-routes', authenticateToken, async (req, res) => {
-    try {
-        console.log('🔍 Buscando eventos finalizados...');
-        
-        const finishedEvents = await Event.find({ 
-            userId: req.userId, 
-            status: 'finalizado' 
-        });
-        
-        console.log(`📊 Encontrados ${finishedEvents.length} eventos finalizados`);
-        
-        if (finishedEvents.length === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Nenhum evento finalizado aguardando coleta',
-                eventsCount: 0
-            });
-        }
-        
-        // Importar o modelo Route
-        const Route = require('../models/Route');
-        
-        // Criar a rota
-        const newRoute = new Route({
-            name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
-            description: `Rota gerada automaticamente para coleta de resíduos de ${finishedEvents.length} evento(s)`,
-            date: new Date(),
-            points: finishedEvents.map((event, index) => ({
-                pointId: event._id,
-                order: index + 1,
-                estimatedVolume: event.estimatedWaste || 500,
-                distance: 0,
-                duration: 0
-            })),
-            totalDistance: 0,
-            totalWaste: finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || 0), 0),
-            fuelConsumption: 0,
-            carbonFootprint: 0,
-            vehicleType: 'truck',
-            status: 'PLANNED',
-            userId: req.userId
-        });
-        
-        await newRoute.save();
-        console.log(`✅ Rota criada com ID: ${newRoute._id}`);
-        
-        // Atualizar eventos
-        for (const event of finishedEvents) {
-            event.status = 'coleta_agendada';
-            event.scheduledCollectionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-            event.routeId = newRoute._id;
-            await event.save();
-        }
-        
-        res.json({ 
-            success: true, 
-            route: newRoute,
-            eventsCount: finishedEvents.length,
-            message: `${finishedEvents.length} eventos prontos para coleta. Rota criada com sucesso!` 
-        });
-        
-    } catch (error) {
-        console.error('❌ Erro detalhado ao gerar rotas:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// DELETE /api/events/:id - Deletar evento
-router.delete('/:id', authenticateToken, async (req, res) => {
-    try {
-        const event = await Event.findOneAndDelete({ _id: req.params.id, userId: req.userId });
-        
-        if (!event) {
-            return res.status(404).json({ error: 'Evento não encontrado' });
-        }
-        
-        res.json({ success: true, message: 'Evento deletado com sucesso' });
-    } catch (error) {
-        console.error('❌ Erro ao deletar evento:', error);
-        res.status(500).json({ error: 'Erro ao deletar evento' });
-    }
-});
-
-// ========== ROTAS DE INTEGRAÇÃO EXTERNA ==========
-
-// Buscar eventos de APIs externas (Ticketmaster)
+// GET /api/events/external/search - Buscar eventos externos
 router.get('/external/search', authenticateToken, async (req, res) => {
     try {
-        const { countryCode, city, keyword, classification, lat, long, radius } = req.query;
-        
-        let result;
-        
-        if (lat && long) {
-            result = await externalEventService.searchEventsByLocation({
-                lat: parseFloat(lat),
-                long: parseFloat(long),
-                radius: radius || '50km',
-                size: 50
-            });
+        const { keyword, city, classification } = req.query;
+
+        console.log('🔍 Buscando eventos externos:', { keyword, city, classification });
+
+        const mockEvents = [
+            {
+                id: '1',
+                name: keyword ? `Evento: ${keyword}` : 'Rock in Rio 2026',
+                city: city || 'Rio de Janeiro',
+                state: 'RJ',
+                country: 'Brasil',
+                startDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+                description: 'O maior festival de música do Brasil!',
+                classification: classification || 'music',
+                expectedAttendees: 100000
+            },
+            {
+                id: '2',
+                name: 'Festival de Tecnologia',
+                city: city || 'São Paulo',
+                state: 'SP',
+                country: 'Brasil',
+                startDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
+                description: 'O maior evento de tecnologia da América Latina',
+                classification: classification || 'conference',
+                expectedAttendees: 50000
+            },
+            {
+                id: '3',
+                name: 'Copa do Mundo de Futebol',
+                city: city || 'Brasília',
+                state: 'DF',
+                country: 'Brasil',
+                startDate: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString(),
+                description: 'Partidas emocionantes do campeonato mundial',
+                classification: classification || 'sports',
+                expectedAttendees: 70000
+            },
+            {
+                id: '4',
+                name: 'Feira de Artesanato',
+                city: city || 'Salvador',
+                state: 'BA',
+                country: 'Brasil',
+                startDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                description: 'Artesanato local e cultura nordestina',
+                classification: classification || 'arts',
+                expectedAttendees: 15000
+            }
+        ];
+
+        let filteredEvents = mockEvents;
+        if (classification && classification !== '') {
+            filteredEvents = mockEvents.filter(e => e.classification === classification);
         }
-        else if (classification) {
-            result = await externalEventService.searchEventsByClassification({
-                classificationName: classification,
-                countryCode: countryCode || 'BR',
-                size: 50
-            });
-        }
-        else {
-            result = await externalEventService.searchEvents({
-                countryCode: countryCode || 'BR',
-                city,
-                keyword,
-                size: 50
-            });
-        }
-        
-        if (!result.success) {
-            return res.status(500).json({ error: result.error });
-        }
-        
-        res.json({
-            success: true,
-            events: result.events,
-            totalPages: result.totalPages,
-            totalElements: result.totalElements,
-            source: 'ticketmaster'
-        });
+
+        res.json({ success: true, events: filteredEvents, source: 'mock' });
     } catch (error) {
-        console.error('❌ Erro ao buscar eventos externos:', error);
-        res.status(500).json({ error: 'Erro ao buscar eventos externos' });
+        console.error('❌ Erro ao buscar eventos:', error);
+        res.status(500).json({ error: 'Erro ao buscar eventos' });
     }
 });
 
-// Importar evento externo para o sistema
+// GET /api/events/external/classification/:name - Buscar por classificação
+router.get('/external/classification/:name', authenticateToken, async (req, res) => {
+    try {
+        const { name } = req.params;
+
+        const classificationEvents = {
+            music: [
+                { id: 'music1', name: 'Lollapalooza', city: 'São Paulo', state: 'SP', startDate: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(), classification: 'music', expectedAttendees: 80000 },
+                { id: 'music2', name: 'Rock in Rio', city: 'Rio de Janeiro', state: 'RJ', startDate: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(), classification: 'music', expectedAttendees: 100000 }
+            ],
+            sports: [
+                { id: 'sports1', name: 'Final do Brasileirão', city: 'São Paulo', state: 'SP', startDate: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString(), classification: 'sports', expectedAttendees: 50000 }
+            ],
+            conference: [
+                { id: 'conf1', name: 'Web Summit', city: 'Rio de Janeiro', state: 'RJ', startDate: new Date(Date.now() + 120 * 24 * 60 * 60 * 1000).toISOString(), classification: 'conference', expectedAttendees: 40000 }
+            ],
+            festival: [
+                { id: 'fest1', name: 'Oktoberfest', city: 'Blumenau', state: 'SC', startDate: new Date(Date.now() + 270 * 24 * 60 * 60 * 1000).toISOString(), classification: 'festival', expectedAttendees: 500000 }
+            ],
+            arts: [
+                { id: 'arts1', name: 'Bienal de Artes', city: 'São Paulo', state: 'SP', startDate: new Date(Date.now() + 200 * 24 * 60 * 60 * 1000).toISOString(), classification: 'arts', expectedAttendees: 20000 }
+            ]
+        };
+
+        const events = classificationEvents[name] || [
+            { id: `${name}_mock`, name: `Eventos de ${name}`, city: 'São Paulo', state: 'SP', startDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), classification: name, expectedAttendees: 10000 }
+        ];
+
+        res.json({ success: true, events: events, classification: name, total: events.length });
+    } catch (error) {
+        console.error('❌ Erro:', error);
+        res.status(500).json({ error: 'Erro ao buscar eventos por classificação' });
+    }
+});
+
+// POST /api/events/external/import/:eventId - Importar evento externo
 router.post('/external/import/:eventId', authenticateToken, async (req, res) => {
     try {
         const { eventId } = req.params;
-        
-        const externalEvent = await externalEventService.getEventById(eventId);
-        
-        if (!externalEvent) {
-            return res.status(404).json({ error: 'Evento não encontrado na API externa' });
-        }
-        
-        const existingEvent = await Event.findOne({ 
-            externalId: eventId, 
-            source: 'ticketmaster',
-            userId: req.userId 
-        });
-        
+
+        console.log(`📥 Importando evento: ${eventId}`);
+
+        const mockEventsMap = {
+            '1': { name: 'Rock in Rio 2026', city: 'Rio de Janeiro', state: 'RJ', classification: 'music', expectedAttendees: 100000 },
+            '2': { name: 'Festival de Tecnologia', city: 'São Paulo', state: 'SP', classification: 'conference', expectedAttendees: 50000 },
+            '3': { name: 'Copa do Mundo de Futebol', city: 'Brasília', state: 'DF', classification: 'sports', expectedAttendees: 70000 },
+            '4': { name: 'Feira de Artesanato', city: 'Salvador', state: 'BA', classification: 'arts', expectedAttendees: 15000 },
+            'music1': { name: 'Lollapalooza', city: 'São Paulo', state: 'SP', classification: 'music', expectedAttendees: 80000 },
+            'music2': { name: 'Rock in Rio', city: 'Rio de Janeiro', state: 'RJ', classification: 'music', expectedAttendees: 100000 },
+            'sports1': { name: 'Final do Brasileirão', city: 'São Paulo', state: 'SP', classification: 'sports', expectedAttendees: 50000 },
+            'conf1': { name: 'Web Summit', city: 'Rio de Janeiro', state: 'RJ', classification: 'conference', expectedAttendees: 40000 },
+            'fest1': { name: 'Oktoberfest', city: 'Blumenau', state: 'SC', classification: 'festival', expectedAttendees: 500000 },
+            'arts1': { name: 'Bienal de Artes', city: 'São Paulo', state: 'SP', classification: 'arts', expectedAttendees: 20000 }
+        };
+
+        const mockData = mockEventsMap[eventId] || {
+            name: 'Evento Importado',
+            city: 'São Paulo',
+            state: 'SP',
+            classification: 'evento',
+            expectedAttendees: 10000
+        };
+
+        const existingEvent = await Event.findOne({ externalId: eventId, userId: req.userId });
         if (existingEvent) {
             return res.status(400).json({ error: 'Evento já foi importado anteriormente' });
         }
-        
+
         const event = new Event({
-            name: externalEvent.name,
-            description: externalEvent.description,
-            type: externalEvent.type,
-            address: externalEvent.address,
-            city: externalEvent.city,
-            state: externalEvent.state,
-            latitude: externalEvent.latitude,
-            longitude: externalEvent.longitude,
-            startDate: new Date(externalEvent.startDate),
-            endDate: new Date(externalEvent.endDate),
-            expectedAttendees: externalEvent.expectedAttendees,
-            estimatedWaste: externalEvent.estimatedWaste,
+            name: mockData.name,
+            description: `Evento ${mockData.name} importado do sistema externo`,
+            type: mockData.classification,
+            address: 'Endereço não informado',
+            city: mockData.city,
+            state: mockData.state,
+            startDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            endDate: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+            expectedAttendees: mockData.expectedAttendees,
+            estimatedWaste: Math.floor(mockData.expectedAttendees * 0.5),
+            wasteCollected: 0,
             userId: req.userId,
             status: 'agendado',
-            externalId: externalEvent.externalId,
-            source: externalEvent.source,
-            externalData: externalEvent
+            externalId: eventId,
+            source: 'mock'
         });
-        
+
         await event.save();
-        
+
+        console.log(`✅ Evento importado: ${event.name}`);
+
         res.status(201).json({
             success: true,
-            event,
+            event: {
+                id: event._id,
+                name: event.name,
+                city: event.city,
+                state: event.state,
+                startDate: event.startDate,
+                expectedAttendees: event.expectedAttendees,
+                status: event.status
+            },
             message: `Evento "${event.name}" importado com sucesso!`
         });
     } catch (error) {
         console.error('❌ Erro ao importar evento:', error);
         res.status(500).json({ error: 'Erro ao importar evento' });
-    }
-});
-
-// Buscar eventos por classificação
-router.get('/external/classification/:name', authenticateToken, async (req, res) => {
-    try {
-        const { name } = req.params;
-        const { countryCode = 'BR' } = req.query;
-        
-        const result = await externalEventService.searchEventsByClassification({
-            classificationName: name,
-            countryCode,
-            size: 50
-        });
-        
-        if (!result.success) {
-            return res.status(500).json({ error: result.error });
-        }
-        
-        res.json({
-            success: true,
-            events: result.events,
-            classification: name,
-            total: result.events.length
-        });
-    } catch (error) {
-        console.error('❌ Erro:', error);
-        res.status(500).json({ error: 'Erro ao buscar eventos por classificação' });
     }
 });
 
