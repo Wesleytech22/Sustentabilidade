@@ -6,6 +6,8 @@ const CollectionPoints = () => {
   const [points, setPoints] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);  // 👈 ADICIONAR ESTA LINHA
+  const [editingPoint, setEditingPoint] = useState(null);     // 👈 ADICIONAR ESTA LINHA
   const [filter, setFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [formData, setFormData] = useState({
@@ -51,11 +53,81 @@ const CollectionPoints = () => {
     const newTypes = formData.wasteTypes.includes(type)
       ? formData.wasteTypes.filter(t => t !== type)
       : [...formData.wasteTypes, type];
-    
+
     setFormData({
       ...formData,
       wasteTypes: newTypes
     });
+  };
+
+  // Abrir modal de edição
+  const handleEdit = (point) => {
+    setEditingPoint(point);
+    setFormData({
+      name: point.name || '',
+      address: point.address || '',
+      city: point.city || '',
+      state: point.state || '',
+      latitude: point.latitude || '',
+      longitude: point.longitude || '',
+      wasteTypes: point.wasteTypes || [],
+      capacity: point.capacity || ''
+    });
+    setShowEditModal(true);
+  };
+
+  // Salvar edição
+  const handleSaveEdit = async () => {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      if (!formData.name || !formData.address || !formData.capacity) {
+        throw new Error('Preencha todos os campos obrigatórios');
+      }
+
+      const pointData = {
+        name: formData.name,
+        address: formData.address,
+        city: formData.city || '',
+        state: formData.state?.toUpperCase() || '',
+        wasteTypes: formData.wasteTypes,
+        capacity: parseFloat(formData.capacity),
+        latitude: formData.latitude ? parseFloat(formData.latitude) : null,
+        longitude: formData.longitude ? parseFloat(formData.longitude) : null
+      };
+
+      console.log('Enviando atualização:', pointData);
+
+      const response = await api.put(`/points/${editingPoint._id}`, pointData);
+
+      console.log('Resposta:', response.data);
+
+      setSuccess('Ponto de coleta atualizado com sucesso!');
+
+      setTimeout(() => {
+        setShowEditModal(false);
+        setEditingPoint(null);
+        setFormData({
+          name: '',
+          address: '',
+          city: '',
+          state: '',
+          latitude: '',
+          longitude: '',
+          wasteTypes: [],
+          capacity: ''
+        });
+        loadPoints();
+      }, 1500);
+
+    } catch (error) {
+      console.error('Erro detalhado:', error);
+      setError(error.response?.data?.error || error.message || 'Erro ao atualizar ponto de coleta');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -63,36 +135,31 @@ const CollectionPoints = () => {
     setSaving(true);
     setError('');
     setSuccess('');
-    
+
     try {
-      // Validar campos obrigatórios
-      if (!formData.name || !formData.address || !formData.city || !formData.state || !formData.capacity) {
+      if (!formData.name || !formData.address || !formData.capacity) {
         throw new Error('Preencha todos os campos obrigatórios');
       }
 
-      // Preparar dados para envio
       const pointData = {
         name: formData.name,
         address: formData.address,
-        city: formData.city,
-        state: formData.state.toUpperCase(),
-        latitude: formData.latitude ? parseFloat(formData.latitude) : null,
-        longitude: formData.longitude ? parseFloat(formData.longitude) : null,
+        city: formData.city || '',
+        state: formData.state?.toUpperCase() || '',
         wasteTypes: formData.wasteTypes,
         capacity: parseFloat(formData.capacity),
-        currentVolume: 0,
-        status: 'ACTIVE'
+        latitude: formData.latitude ? parseFloat(formData.latitude) : null,
+        longitude: formData.longitude ? parseFloat(formData.longitude) : null
       };
 
-      console.log('Enviando dados:', pointData); // Para debug
+      console.log('Enviando dados:', pointData);
 
       const response = await api.post('/points', pointData);
-      
-      console.log('Resposta:', response.data); // Para debug
-      
+
+      console.log('Resposta:', response.data);
+
       setSuccess('Ponto de coleta criado com sucesso!');
-      
-      // Fechar modal e limpar formulário
+
       setTimeout(() => {
         setShowModal(false);
         setFormData({
@@ -105,9 +172,9 @@ const CollectionPoints = () => {
           wasteTypes: [],
           capacity: ''
         });
-        loadPoints(); // Recarregar a lista
+        loadPoints();
       }, 1500);
-      
+
     } catch (error) {
       console.error('Erro detalhado:', error);
       setError(error.response?.data?.error || error.message || 'Erro ao criar ponto de coleta');
@@ -135,20 +202,21 @@ const CollectionPoints = () => {
       'papel': 'Papel',
       'vidro': 'Vidro',
       'metal': 'Metal',
-      'organico': 'Orgânico'
+      'organico': 'Orgânico',
+      'eletronico': 'Eletrônico'
     };
     return types[type] || type;
   };
 
   const filteredPoints = points.filter(point => {
-    const matchesSearch = filter === '' || 
+    const matchesSearch = filter === '' ||
       point.name?.toLowerCase().includes(filter.toLowerCase()) ||
       point.address?.toLowerCase().includes(filter.toLowerCase()) ||
       point.city?.toLowerCase().includes(filter.toLowerCase());
-    
-    const matchesType = typeFilter === '' || 
+
+    const matchesType = typeFilter === '' ||
       (point.wasteTypes && point.wasteTypes.includes(typeFilter));
-    
+
     return matchesSearch && matchesType;
   });
 
@@ -163,7 +231,6 @@ const CollectionPoints = () => {
 
   return (
     <div className="points-container">
-      {/* Header da página */}
       <div className="points-header">
         <h2>Pontos de Coleta</h2>
         <button className="btn-primary" onClick={() => setShowModal(true)}>
@@ -171,14 +238,13 @@ const CollectionPoints = () => {
         </button>
       </div>
 
-      {/* Mensagens de feedback */}
       {error && (
         <div className="alert alert-error">
           <i className="fas fa-exclamation-circle"></i>
           {error}
         </div>
       )}
-      
+
       {success && (
         <div className="alert alert-success">
           <i className="fas fa-check-circle"></i>
@@ -186,7 +252,6 @@ const CollectionPoints = () => {
         </div>
       )}
 
-      {/* Filtros */}
       <div className="filters-section">
         <div className="search-box">
           <i className="fas fa-search"></i>
@@ -197,8 +262,8 @@ const CollectionPoints = () => {
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
-        
-        <select 
+
+        <select
           className="filter-select"
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value)}
@@ -212,7 +277,6 @@ const CollectionPoints = () => {
         </select>
       </div>
 
-      {/* Grid de Pontos */}
       {filteredPoints.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon">
@@ -227,20 +291,29 @@ const CollectionPoints = () => {
             <div key={point._id} className="point-card">
               <div className="point-card-header">
                 <h3>{point.name}</h3>
-                <button 
-                  className="btn-delete"
-                  onClick={() => handleDelete(point._id)}
-                  title="Deletar ponto"
-                >
-                  <i className="fas fa-trash"></i>
-                </button>
+                <div className="card-actions">
+                  <button
+                    className="btn-edit"
+                    onClick={() => handleEdit(point)}
+                    title="Editar ponto"
+                  >
+                    <i className="fas fa-edit"></i>
+                  </button>
+                  <button
+                    className="btn-delete"
+                    onClick={() => handleDelete(point._id)}
+                    title="Deletar ponto"
+                  >
+                    <i className="fas fa-trash"></i>
+                  </button>
+                </div>
               </div>
-              
+
               <div className="point-address">
                 <i className="fas fa-map-marker-alt"></i>
                 <span>{point.address}, {point.city} - {point.state}</span>
               </div>
-              
+
               {point.wasteTypes && point.wasteTypes.length > 0 && (
                 <div className="point-types">
                   {point.wasteTypes.map(type => (
@@ -250,34 +323,31 @@ const CollectionPoints = () => {
                   ))}
                 </div>
               )}
-              
+
               <div className="point-capacity">
                 <div className="capacity-info">
                   <i className="fas fa-weight-hanging"></i>
                   <span>Capacidade: {point.currentVolume || 0}/{point.capacity} kg</span>
                 </div>
                 <div className="capacity-bar">
-                  <div 
+                  <div
                     className="capacity-fill"
                     style={{ width: `${((point.currentVolume || 0) / point.capacity) * 100}%` }}
                   ></div>
                 </div>
               </div>
-              
+
               <div className="point-footer">
                 <span className={`status-badge ${point.status?.toLowerCase() || 'active'}`}>
                   {point.status === 'ACTIVE' ? 'Ativo' : point.status || 'Ativo'}
                 </span>
-                <button className="btn-edit">
-                  <i className="fas fa-edit"></i> Editar
-                </button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Modal de Criação */}
+      {/* MODAL DE CRIAÇÃO */}
       {showModal && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
@@ -315,26 +385,24 @@ const CollectionPoints = () => {
 
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Cidade *</label>
+                    <label>Cidade</label>
                     <input
                       type="text"
                       name="city"
                       value={formData.city}
                       onChange={handleInputChange}
-                      required
                       placeholder="São Paulo"
                       disabled={saving}
                     />
                   </div>
 
                   <div className="form-group">
-                    <label>UF *</label>
+                    <label>UF</label>
                     <input
                       type="text"
                       name="state"
                       value={formData.state}
                       onChange={handleInputChange}
-                      required
                       maxLength="2"
                       placeholder="SP"
                       disabled={saving}
@@ -387,7 +455,7 @@ const CollectionPoints = () => {
                 <div className="form-group">
                   <label>Tipos de Resíduos Aceitos</label>
                   <div className="checkbox-group">
-                    {['plastico', 'papel', 'vidro', 'metal', 'organico'].map(type => (
+                    {['plastico', 'papel', 'vidro', 'metal', 'organico', 'eletronico'].map(type => (
                       <label key={type}>
                         <input
                           type="checkbox"
@@ -401,24 +469,17 @@ const CollectionPoints = () => {
                   </div>
                 </div>
 
-                {error && (
-                  <div className="alert alert-error">
-                    <i className="fas fa-exclamation-circle"></i>
-                    {error}
-                  </div>
-                )}
-
                 <div className="modal-actions">
-                  <button 
-                    type="button" 
-                    className="btn-secondary" 
+                  <button
+                    type="button"
+                    className="btn-secondary"
                     onClick={() => setShowModal(false)}
                     disabled={saving}
                   >
                     Cancelar
                   </button>
-                  <button 
-                    type="submit" 
+                  <button
+                    type="submit"
                     className="btn-primary"
                     disabled={saving}
                   >
@@ -431,6 +492,161 @@ const CollectionPoints = () => {
                       <>
                         <i className="fas fa-save"></i>
                         Salvar Ponto
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE EDIÇÃO */}
+      {showEditModal && editingPoint && (
+        <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Editar Ponto de Coleta</h2>
+              <button className="close" onClick={() => setShowEditModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <form onSubmit={(e) => { e.preventDefault(); handleSaveEdit(); }}>
+                <div className="form-group">
+                  <label>Nome do Ponto *</label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleInputChange}
+                    required
+                    placeholder="Ex: Ecoponto Centro"
+                    disabled={saving}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Endereço *</label>
+                  <input
+                    type="text"
+                    name="address"
+                    value={formData.address}
+                    onChange={handleInputChange}
+                    required
+                    placeholder="Ex: Rua Augusta, 500"
+                    disabled={saving}
+                  />
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Cidade</label>
+                    <input
+                      type="text"
+                      name="city"
+                      value={formData.city}
+                      onChange={handleInputChange}
+                      placeholder="São Paulo"
+                      disabled={saving}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>UF</label>
+                    <input
+                      type="text"
+                      name="state"
+                      value={formData.state}
+                      onChange={handleInputChange}
+                      maxLength="2"
+                      placeholder="SP"
+                      disabled={saving}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Latitude</label>
+                    <input
+                      type="number"
+                      step="any"
+                      name="latitude"
+                      value={formData.latitude}
+                      onChange={handleInputChange}
+                      placeholder="-23.5505"
+                      disabled={saving}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Longitude</label>
+                    <input
+                      type="number"
+                      step="any"
+                      name="longitude"
+                      value={formData.longitude}
+                      onChange={handleInputChange}
+                      placeholder="-46.6333"
+                      disabled={saving}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Capacidade (kg) *</label>
+                  <input
+                    type="number"
+                    name="capacity"
+                    value={formData.capacity}
+                    onChange={handleInputChange}
+                    required
+                    placeholder="5000"
+                    min="1"
+                    disabled={saving}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Tipos de Resíduos Aceitos</label>
+                  <div className="checkbox-group">
+                    {['plastico', 'papel', 'vidro', 'metal', 'organico', 'eletronico'].map(type => (
+                      <label key={type}>
+                        <input
+                          type="checkbox"
+                          checked={formData.wasteTypes.includes(type)}
+                          onChange={() => handleWasteTypeChange(type)}
+                          disabled={saving}
+                        />
+                        {getWasteTypeLabel(type)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setShowEditModal(false)}
+                    disabled={saving}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={saving}
+                  >
+                    {saving ? (
+                      <>
+                        <i className="fas fa-spinner fa-spin"></i>
+                        Salvando...
+                      </>
+                    ) : (
+                      <>
+                        <i className="fas fa-save"></i>
+                        Salvar Alterações
                       </>
                     )}
                   </button>

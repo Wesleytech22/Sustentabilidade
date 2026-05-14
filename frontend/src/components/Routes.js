@@ -33,10 +33,10 @@ const RoutesList = () => {
   const API_URL = 'http://localhost:3000/api';
 
   const getAuthToken = () => {
-    const token = localStorage.getItem('token') || 
-                  localStorage.getItem('authToken') || 
-                  sessionStorage.getItem('token') ||
-                  sessionStorage.getItem('authToken');
+    const token = localStorage.getItem('token') ||
+      localStorage.getItem('authToken') ||
+      sessionStorage.getItem('token') ||
+      sessionStorage.getItem('authToken');
     return token;
   };
 
@@ -55,16 +55,16 @@ const RoutesList = () => {
     try {
       setLoading(true);
       setError(null);
-      
+
       const token = getAuthToken();
       if (!token) {
         setError('Usuário não autenticado. Por favor, faça login.');
         setLoading(false);
         return;
       }
-      
+
       const response = await axios.get(`${API_URL}/routes`, getAuthHeaders());
-      
+
       const formattedRoutes = response.data.map(route => ({
         id: route._id,
         _id: route._id,
@@ -82,11 +82,11 @@ const RoutesList = () => {
         eventInfo: route.eventInfo || null,
         eventsSummary: route.eventsSummary || []
       }));
-      
+
       setRoutes(formattedRoutes);
     } catch (err) {
       console.error('Erro ao buscar rotas:', err);
-      
+
       if (err.response?.status === 401) {
         setError('Sessão expirada. Por favor, faça login novamente.');
         setTimeout(() => {
@@ -103,21 +103,21 @@ const RoutesList = () => {
   };
 
   // ========== FUNÇÕES DE BUSCA EXTERNA ==========
-  
+
   // Buscar eventos externos
   const searchExternalEvents = async () => {
     try {
       setSearching(true);
       setError(null);
-      
+
       const params = new URLSearchParams();
       if (searchParams.keyword) params.append('keyword', searchParams.keyword);
       if (searchParams.city) params.append('city', searchParams.city);
       if (searchParams.countryCode) params.append('countryCode', searchParams.countryCode);
       if (searchParams.classification) params.append('classification', searchParams.classification);
-      
+
       const response = await axios.get(`${API_URL}/events/external/search?${params.toString()}`, getAuthHeaders());
-      
+
       if (response.data.success) {
         setExternalEvents(response.data.events || []);
         if (response.data.events.length === 0) {
@@ -139,7 +139,7 @@ const RoutesList = () => {
     try {
       setImporting(true);
       const response = await axios.post(`${API_URL}/events/external/import/${eventId}`, {}, getAuthHeaders());
-      
+
       if (response.data.success) {
         alert(`Evento "${response.data.event.name}" importado com sucesso!`);
         setShowExternalModal(false);
@@ -162,7 +162,7 @@ const RoutesList = () => {
     try {
       setSearching(true);
       const response = await axios.get(`${API_URL}/events/external/classification/${encodeURIComponent(classification)}?countryCode=BR`, getAuthHeaders());
-      
+
       if (response.data.success) {
         setExternalEvents(response.data.events || []);
         if (response.data.events.length === 0) {
@@ -184,7 +184,7 @@ const RoutesList = () => {
     try {
       setLoading(true);
       const response = await axios.post(`${API_URL}/routes/generate-from-events`, {}, getAuthHeaders());
-      
+
       const newRoute = {
         id: response.data._id,
         _id: response.data._id,
@@ -199,7 +199,7 @@ const RoutesList = () => {
         eventInfo: response.data.eventInfo || null,
         eventsSummary: response.data.eventsSummary || []
       };
-      
+
       setRoutes([newRoute, ...routes]);
       alert('Rota criada com sucesso!');
     } catch (err) {
@@ -222,25 +222,30 @@ const RoutesList = () => {
   const handleSaveEdit = async () => {
     try {
       setLoading(true);
-      
-      await axios.put(`${API_URL}/routes/${selectedRoute._id}`, 
+
+      // Enviar todos os campos para atualização
+      await axios.put(`${API_URL}/routes/${selectedRoute._id}`,
         {
           name: editFormData.name,
-          status: editFormData.status
+          status: editFormData.status,
+          points: parseInt(editFormData.points) || 0,
+          distance: parseFloat(editFormData.distance) || 0,
+          totalWaste: parseInt(editFormData.waste) || 0
         },
         getAuthHeaders()
       );
-      
-      const updatedRoutes = routes.map(route => 
-        route.id === selectedRoute.id 
-          ? { 
-              ...route, 
-              name: editFormData.name,
-              points: parseInt(editFormData.points),
-              distance: parseFloat(editFormData.distance),
-              waste: parseInt(editFormData.waste),
-              status: editFormData.status
-            } 
+
+      // Atualizar a lista localmente
+      const updatedRoutes = routes.map(route =>
+        route.id === selectedRoute.id
+          ? {
+            ...route,
+            name: editFormData.name,
+            points: parseInt(editFormData.points) || 0,
+            distance: parseFloat(editFormData.distance) || 0,
+            waste: parseInt(editFormData.waste) || 0,
+            status: editFormData.status
+          }
           : route
       );
       setRoutes(updatedRoutes);
@@ -265,7 +270,7 @@ const RoutesList = () => {
       try {
         setLoading(true);
         await axios.delete(`${API_URL}/routes/${routeId}`, getAuthHeaders());
-        
+
         const updatedRoutes = routes.filter(route => route.id !== routeId);
         setRoutes(updatedRoutes);
         alert('Rota excluída com sucesso!');
@@ -288,7 +293,7 @@ const RoutesList = () => {
   }, []);
 
   const getStatusColor = (status) => {
-    switch(status) {
+    switch (status) {
       case 'PLANNED': return '#ff9800';
       case 'IN_PROGRESS': return '#2196F3';
       case 'COMPLETED': return '#4CAF50';
@@ -297,7 +302,7 @@ const RoutesList = () => {
   };
 
   const getStatusText = (status) => {
-    switch(status) {
+    switch (status) {
       case 'PLANNED': return 'Planejada';
       case 'IN_PROGRESS': return 'Em Andamento';
       case 'COMPLETED': return 'Concluída';
@@ -372,22 +377,22 @@ const RoutesList = () => {
             <div key={route.id} className="route-card">
               <div className="route-header">
                 <h3>{route.name}</h3>
-                <span 
+                <span
                   className="status-badge"
-                  style={{ 
-                    backgroundColor: getStatusColor(route.status) + '20', 
-                    color: getStatusColor(route.status) 
+                  style={{
+                    backgroundColor: getStatusColor(route.status) + '20',
+                    color: getStatusColor(route.status)
                   }}
                 >
                   {getStatusText(route.status)}
                 </span>
               </div>
-              
+
               {route.eventInfo && route.eventInfo.eventName && (
-                <div className="route-event-info" style={{ 
-                  marginBottom: '12px', 
-                  padding: '8px', 
-                  background: '#e8f5e9', 
+                <div className="route-event-info" style={{
+                  marginBottom: '12px',
+                  padding: '8px',
+                  background: '#e8f5e9',
                   borderRadius: '8px',
                   fontSize: '13px',
                   color: '#2e7d32'
@@ -400,10 +405,10 @@ const RoutesList = () => {
               )}
 
               {route.eventsSummary && route.eventsSummary.length > 0 && (
-                <div className="route-event-info" style={{ 
-                  marginBottom: '12px', 
-                  padding: '8px', 
-                  background: '#e3f2fd', 
+                <div className="route-event-info" style={{
+                  marginBottom: '12px',
+                  padding: '8px',
+                  background: '#e3f2fd',
                   borderRadius: '8px',
                   fontSize: '13px',
                   color: '#1565c0'
@@ -417,7 +422,7 @@ const RoutesList = () => {
                   ))}
                 </div>
               )}
-              
+
               <div className="route-stats">
                 <div className="route-stat">
                   <i className="fas fa-calendar"></i>
@@ -438,19 +443,19 @@ const RoutesList = () => {
               </div>
 
               <div className="route-footer">
-                <button 
+                <button
                   className="btn-view"
                   onClick={() => handleViewDetails(route)}
                 >
                   <i className="fas fa-eye"></i> Ver Detalhes
                 </button>
-                <button 
+                <button
                   className="btn-edit"
                   onClick={() => handleEdit(route)}
                 >
                   <i className="fas fa-edit"></i> Editar
                 </button>
-                <button 
+                <button
                   className="btn-delete"
                   onClick={() => handleDeleteRoute(route.id)}
                 >
@@ -499,7 +504,7 @@ const RoutesList = () => {
                     <input
                       type="text"
                       value={searchParams.keyword}
-                      onChange={(e) => setSearchParams({...searchParams, keyword: e.target.value})}
+                      onChange={(e) => setSearchParams({ ...searchParams, keyword: e.target.value })}
                       placeholder="Ex: Rock in Rio, Show, Teatro"
                       onKeyPress={(e) => e.key === 'Enter' && searchExternalEvents()}
                     />
@@ -509,7 +514,7 @@ const RoutesList = () => {
                     <input
                       type="text"
                       value={searchParams.city}
-                      onChange={(e) => setSearchParams({...searchParams, city: e.target.value})}
+                      onChange={(e) => setSearchParams({ ...searchParams, city: e.target.value })}
                       placeholder="Ex: São Paulo, Rio de Janeiro"
                     />
                   </div>
@@ -519,7 +524,7 @@ const RoutesList = () => {
                     <label>Classificação</label>
                     <select
                       value={searchParams.classification}
-                      onChange={(e) => setSearchParams({...searchParams, classification: e.target.value})}
+                      onChange={(e) => setSearchParams({ ...searchParams, classification: e.target.value })}
                     >
                       <option value="">Todas</option>
                       <option value="music">Música/Shows</option>
@@ -533,7 +538,7 @@ const RoutesList = () => {
                     <label>País</label>
                     <select
                       value={searchParams.countryCode}
-                      onChange={(e) => setSearchParams({...searchParams, countryCode: e.target.value})}
+                      onChange={(e) => setSearchParams({ ...searchParams, countryCode: e.target.value })}
                     >
                       <option value="BR">Brasil</option>
                       <option value="US">Estados Unidos</option>
@@ -544,9 +549,9 @@ const RoutesList = () => {
                     </select>
                   </div>
                 </div>
-                <button 
-                  className="btn-primary" 
-                  onClick={searchExternalEvents} 
+                <button
+                  className="btn-primary"
+                  onClick={searchExternalEvents}
                   disabled={searching}
                   style={{ width: '100%', marginTop: '10px' }}
                 >
@@ -587,16 +592,16 @@ const RoutesList = () => {
                               </p>
                             )}
                             <div style={{ marginTop: '8px' }}>
-                              <span className="status-badge" style={{ 
-                                background: '#e3f2fd', 
+                              <span className="status-badge" style={{
+                                background: '#e3f2fd',
                                 color: '#1976d2',
                                 fontSize: '11px'
                               }}>
                                 {event.classification || 'Evento'}
                               </span>
                               {event.expectedAttendees && (
-                                <span className="status-badge" style={{ 
-                                  background: '#e8f5e9', 
+                                <span className="status-badge" style={{
+                                  background: '#e8f5e9',
                                   color: '#2e7d32',
                                   fontSize: '11px',
                                   marginLeft: '8px'
@@ -606,8 +611,8 @@ const RoutesList = () => {
                               )}
                             </div>
                           </div>
-                          <button 
-                            className="btn-primary" 
+                          <button
+                            className="btn-primary"
                             onClick={() => importExternalEvent(event.id)}
                             disabled={importing}
                             style={{ marginLeft: '15px', padding: '8px 16px', fontSize: '12px' }}
@@ -717,7 +722,7 @@ const RoutesList = () => {
                 <input
                   type="text"
                   value={editFormData.name}
-                  onChange={(e) => setEditFormData({...editFormData, name: e.target.value})}
+                  onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
                   placeholder="Ex: Rota Zona Norte"
                 />
               </div>
@@ -728,7 +733,7 @@ const RoutesList = () => {
                   <input
                     type="number"
                     value={editFormData.points}
-                    onChange={(e) => setEditFormData({...editFormData, points: parseInt(e.target.value)})}
+                    onChange={(e) => setEditFormData({ ...editFormData, points: parseInt(e.target.value) })}
                   />
                 </div>
 
@@ -738,7 +743,7 @@ const RoutesList = () => {
                     type="number"
                     step="0.1"
                     value={editFormData.distance}
-                    onChange={(e) => setEditFormData({...editFormData, distance: parseFloat(e.target.value)})}
+                    onChange={(e) => setEditFormData({ ...editFormData, distance: parseFloat(e.target.value) })}
                   />
                 </div>
               </div>
@@ -749,7 +754,7 @@ const RoutesList = () => {
                   <input
                     type="number"
                     value={editFormData.waste}
-                    onChange={(e) => setEditFormData({...editFormData, waste: parseInt(e.target.value)})}
+                    onChange={(e) => setEditFormData({ ...editFormData, waste: parseInt(e.target.value) })}
                   />
                 </div>
 
@@ -757,7 +762,7 @@ const RoutesList = () => {
                   <label>Status</label>
                   <select
                     value={editFormData.status}
-                    onChange={(e) => setEditFormData({...editFormData, status: e.target.value})}
+                    onChange={(e) => setEditFormData({ ...editFormData, status: e.target.value })}
                   >
                     <option value="PLANNED">Planejada</option>
                     <option value="IN_PROGRESS">Em Andamento</option>

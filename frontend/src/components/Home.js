@@ -27,20 +27,30 @@ ChartJS.register(
 );
 
 const Home = () => {
-  const { user } = useAuth();
+  const { user, api } = useAuth();
   const [stats, setStats] = useState({
-    points: 12,
-    routes: 5,
-    totalWaste: 2450,
-    totalCarbon: 324
+    points: 0,
+    routes: 0,
+    totalWaste: 0,
+    totalCarbon: 0
   });
-  const [loading, setLoading] = useState(false);
+  const [wasteByType, setWasteByType] = useState({
+    labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+    data: [0, 0, 0, 0, 0]
+  });
+  const [monthlyImpact, setMonthlyImpact] = useState({
+    labels: [],
+    data: []
+  });
+  const [recentActivities, setRecentActivities] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   // Função para obter a mensagem de boas-vindas baseada no role
   const getWelcomeMessage = () => {
     if (!user) return 'Bem-vindo ao EcoRoute!';
-    
-    switch(user.role) {
+
+    switch (user.role) {
       case 'SUPPORT':
         return 'Bem-vindo, equipe de Suporte!';
       case 'COMPANY':
@@ -54,12 +64,69 @@ const Home = () => {
     }
   };
 
+  // Carregar dados reais do backend
+  const loadDashboardData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Buscar estatísticas gerais
+      const [statsRes, wasteRes, impactRes, activitiesRes] = await Promise.all([
+        api.get('/dashboard/stats').catch(() => ({ data: null })),
+        api.get('/dashboard/waste-by-type').catch(() => ({ data: null })),
+        api.get('/dashboard/monthly-impact').catch(() => ({ data: null })),
+        api.get('/dashboard/recent-activities').catch(() => ({ data: null }))
+      ]);
+
+      // Estatísticas
+      if (statsRes.data) {
+        setStats({
+          points: statsRes.data.pointsCount || 0,
+          routes: statsRes.data.routesCount || 0,
+          totalWaste: statsRes.data.totalWaste || 0,
+          totalCarbon: statsRes.data.totalCarbon || 0
+        });
+      }
+
+      // Resíduos por tipo
+      if (wasteRes.data && wasteRes.data.labels) {
+        setWasteByType({
+          labels: wasteRes.data.labels,
+          data: wasteRes.data.data
+        });
+      }
+
+      // Impacto mensal
+      if (impactRes.data && impactRes.data.labels) {
+        setMonthlyImpact({
+          labels: impactRes.data.labels,
+          data: impactRes.data.data
+        });
+      }
+
+      // Atividades recentes
+      if (activitiesRes.data && activitiesRes.data.activities) {
+        setRecentActivities(activitiesRes.data.activities);
+      }
+
+    } catch (err) {
+      console.error('Erro ao carregar dados do dashboard:', err);
+      setError('Erro ao carregar dados. Tente novamente mais tarde.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboardData();
+  }, []);
+
   // Dados para o gráfico de coleta por tipo
   const wasteData = {
-    labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+    labels: wasteByType.labels,
     datasets: [
       {
-        data: [850, 1200, 400, 650, 350],
+        data: wasteByType.data,
         backgroundColor: [
           '#FF6384',
           '#36A2EB',
@@ -74,11 +141,11 @@ const Home = () => {
 
   // Dados para o gráfico de impacto mensal
   const impactData = {
-    labels: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'],
+    labels: monthlyImpact.labels,
     datasets: [
       {
         label: 'CO₂ Economizado (kg)',
-        data: [120, 190, 300, 450, 520, 324, 480, 510, 600, 720, 800, 950],
+        data: monthlyImpact.data,
         borderColor: '#4CAF50',
         backgroundColor: 'rgba(76, 175, 80, 0.1)',
         tension: 0.4,
@@ -130,17 +197,19 @@ const Home = () => {
       y: {
         beginAtZero: true,
         grid: { color: 'rgba(0,0,0,0.05)' },
-        ticks: { 
+        ticks: {
           callback: value => value + ' kg',
           font: { size: 11 }
         }
       },
-      x: { 
+      x: {
         grid: { display: false },
         ticks: { font: { size: 11 } }
       }
     }
   };
+
+  const totalWaste = wasteByType.data.reduce((a, b) => a + b, 0);
 
   if (loading) {
     return (
@@ -151,9 +220,18 @@ const Home = () => {
     );
   }
 
+  if (error) {
+    return (
+      <div className="error-container">
+        <i className="fas fa-exclamation-triangle"></i>
+        <p>{error}</p>
+        <button onClick={loadDashboardData} className="btn-primary">Tentar Novamente</button>
+      </div>
+    );
+  }
+
   return (
     <div className="home">
-      {/* 👉 CABEÇALHO DE BOAS-VINDAS SIMPLES E ORGANIZADO */}
       <div className="welcome-header">
         <div className="welcome-text">
           <h2>{getWelcomeMessage()}</h2>
@@ -192,7 +270,7 @@ const Home = () => {
           </div>
           <div className="stat-info">
             <span className="stat-label">Resíduos Coletados</span>
-            <span className="stat-value">{stats.totalWaste} kg</span>
+            <span className="stat-value">{stats.totalWaste.toLocaleString()} kg</span>
           </div>
         </div>
 
@@ -202,7 +280,7 @@ const Home = () => {
           </div>
           <div className="stat-info">
             <span className="stat-label">CO₂ Economizado</span>
-            <span className="stat-value">{stats.totalCarbon} kg</span>
+            <span className="stat-value">{stats.totalCarbon.toLocaleString()} kg</span>
           </div>
         </div>
       </div>
@@ -215,10 +293,17 @@ const Home = () => {
             <h3>Coletas por Tipo de Material</h3>
           </div>
           <div className="chart-wrapper">
-            <Doughnut data={wasteData} options={doughnutOptions} />
+            {totalWaste > 0 ? (
+              <Doughnut data={wasteData} options={doughnutOptions} />
+            ) : (
+              <div className="no-data-message">
+                <i className="fas fa-chart-pie"></i>
+                <p>Nenhum dado de coleta disponível</p>
+              </div>
+            )}
           </div>
           <div className="chart-footer">
-            <span>Total: 3.450 kg</span>
+            <span>Total: {totalWaste.toLocaleString()} kg</span>
           </div>
         </div>
 
@@ -228,10 +313,14 @@ const Home = () => {
             <h3>Evolução do Impacto Ambiental</h3>
           </div>
           <div className="chart-wrapper">
-            <Line data={impactData} options={lineOptions} />
-          </div>
-          <div className="chart-footer">
-            <span>Meta mensal: 1.000 kg CO₂</span>
+            {monthlyImpact.data.length > 0 ? (
+              <Line data={impactData} options={lineOptions} />
+            ) : (
+              <div className="no-data-message">
+                <i className="fas fa-chart-line"></i>
+                <p>Nenhum dado de impacto disponível</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -243,49 +332,26 @@ const Home = () => {
           Últimas Atividades
         </h3>
         <div className="activities-list">
-          <div className="activity-item">
-            <div className="activity-icon">
-              <i className="fas fa-plus-circle"></i>
+          {recentActivities.length > 0 ? (
+            recentActivities.map((activity, index) => (
+              <div key={activity.id || index} className="activity-item">
+                <div className="activity-icon">
+                  <i className={activity.icon || 'fas fa-info-circle'}></i>
+                </div>
+                <div className="activity-details">
+                  <span className="activity-title">{activity.title}</span>
+                  <span className="activity-time">{activity.timeAgo || activity.date}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-activities">
+              <p>Nenhuma atividade recente</p>
             </div>
-            <div className="activity-details">
-              <span className="activity-title">Novo ponto de coleta cadastrado</span>
-              <span className="activity-time">Há 2 horas</span>
-            </div>
-          </div>
-
-          <div className="activity-item">
-            <div className="activity-icon">
-              <i className="fas fa-truck"></i>
-            </div>
-            <div className="activity-details">
-              <span className="activity-title">Rota #123 concluída</span>
-              <span className="activity-time">Há 5 horas</span>
-            </div>
-          </div>
-
-          <div className="activity-item">
-            <div className="activity-icon">
-              <i className="fas fa-recycle"></i>
-            </div>
-            <div className="activity-details">
-              <span className="activity-title">850 kg de plástico reciclados</span>
-              <span className="activity-time">Há 1 dia</span>
-            </div>
-          </div>
-
-          <div className="activity-item">
-            <div className="activity-icon">
-              <i className="fas fa-leaf"></i>
-            </div>
-            <div className="activity-details">
-              <span className="activity-title">324 kg de CO₂ economizados este mês</span>
-              <span className="activity-time">Há 2 dias</span>
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* CSS adicional para o cabeçalho */}
       <style jsx>{`
         .welcome-header {
           margin-bottom: 25px;
@@ -310,8 +376,34 @@ const Home = () => {
           gap: 8px;
         }
 
-        .welcome-text .user-name i {
-          font-size: 18px;
+        .no-data-message {
+          text-align: center;
+          padding: 40px;
+          color: #999;
+        }
+
+        .no-data-message i {
+          font-size: 48px;
+          margin-bottom: 10px;
+        }
+
+        .empty-activities {
+          text-align: center;
+          padding: 30px;
+          color: #999;
+        }
+
+        .error-container {
+          text-align: center;
+          padding: 50px;
+          background: #fff3f3;
+          border-radius: 12px;
+          color: #d32f2f;
+        }
+
+        .error-container i {
+          font-size: 48px;
+          margin-bottom: 15px;
         }
       `}</style>
     </div>

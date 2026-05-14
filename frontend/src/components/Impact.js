@@ -28,26 +28,98 @@ ChartJS.register(
 
 const Impact = () => {
   const { api } = useAuth();
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [selectedPeriod, setSelectedPeriod] = useState('month');
   const [impact, setImpact] = useState({
-    treesSaved: 1248,
-    waterSaved: 62400,
-    energySaved: 21840,
-    carbonSaved: 8424,
-    recyclingRate: 78,
-    co2Reduction: 3240,
-    fuelSaved: 1250,
-    wasteDiverted: 8450
+    treesSaved: 0,
+    waterSaved: 0,
+    energySaved: 0,
+    carbonSaved: 0,
+    recyclingRate: 0,
+    co2Reduction: 0,
+    fuelSaved: 0,
+    wasteDiverted: 0
   });
+  const [evolutionData, setEvolutionData] = useState({
+    labels: [],
+    actual: [],
+    goal: []
+  });
+  const [wasteDistribution, setWasteDistribution] = useState({
+    labels: [],
+    data: []
+  });
+  const [benefitsDetail, setBenefitsDetail] = useState([]);
 
-  // Dados para o gráfico de evolução mensal
-  const evolutionData = {
-    labels: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'],
+  // Carregar dados reais
+  const loadImpactData = async (period) => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const [impactRes, evolutionRes, distributionRes, benefitsRes] = await Promise.all([
+        api.get('/impact/summary').catch(() => ({ data: null })),
+        api.get(`/impact/evolution?period=${period}`).catch(() => ({ data: null })),
+        api.get('/impact/waste-distribution').catch(() => ({ data: null })),
+        api.get('/impact/benefits').catch(() => ({ data: null }))
+      ]);
+
+      // Impacto principal
+      if (impactRes.data) {
+        setImpact({
+          treesSaved: impactRes.data.treesSaved || 0,
+          waterSaved: impactRes.data.waterSaved || 0,
+          energySaved: impactRes.data.energySaved || 0,
+          carbonSaved: impactRes.data.carbonSaved || 0,
+          recyclingRate: impactRes.data.recyclingRate || 0,
+          co2Reduction: impactRes.data.co2Reduction || 0,
+          fuelSaved: impactRes.data.fuelSaved || 0,
+          wasteDiverted: impactRes.data.wasteDiverted || 0
+        });
+      }
+
+      // Evolução
+      if (evolutionRes.data && evolutionRes.data.labels) {
+        setEvolutionData({
+          labels: evolutionRes.data.labels,
+          actual: evolutionRes.data.actual,
+          goal: evolutionRes.data.goal
+        });
+      }
+
+      // Distribuição de resíduos
+      if (distributionRes.data && distributionRes.data.labels) {
+        setWasteDistribution({
+          labels: distributionRes.data.labels,
+          data: distributionRes.data.data
+        });
+      }
+
+      // Benefícios detalhados
+      if (benefitsRes.data && benefitsRes.data.benefits) {
+        setBenefitsDetail(benefitsRes.data.benefits);
+      }
+
+    } catch (err) {
+      console.error('Erro ao carregar dados de impacto:', err);
+      setError('Erro ao carregar dados de impacto. Tente novamente mais tarde.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadImpactData(selectedPeriod);
+  }, [selectedPeriod]);
+
+  // Dados para o gráfico de evolução
+  const evolutionChartData = {
+    labels: evolutionData.labels,
     datasets: [
       {
         label: 'CO₂ Evitado (kg)',
-        data: [3240, 3560, 3890, 4120, 4450, 4680, 4920, 5230, 5540, 5860, 6120, 6420],
+        data: evolutionData.actual,
         borderColor: '#4CAF50',
         backgroundColor: 'rgba(76, 175, 80, 0.1)',
         tension: 0.4,
@@ -60,7 +132,7 @@ const Impact = () => {
       },
       {
         label: 'Meta',
-        data: [3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400, 5700, 6000, 6300],
+        data: evolutionData.goal,
         borderColor: '#FF9800',
         borderDash: [5, 5],
         borderWidth: 2,
@@ -73,10 +145,10 @@ const Impact = () => {
 
   // Dados para o gráfico de distribuição de resíduos
   const wasteDistributionData = {
-    labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+    labels: wasteDistribution.labels,
     datasets: [
       {
-        data: [2850, 3420, 1250, 980, 1950],
+        data: wasteDistribution.data,
         backgroundColor: [
           '#FF6384',
           '#36A2EB',
@@ -115,12 +187,12 @@ const Impact = () => {
       y: {
         beginAtZero: true,
         grid: { color: 'rgba(0,0,0,0.05)' },
-        ticks: { 
+        ticks: {
           callback: value => value.toLocaleString() + ' kg',
           font: { size: 11 }
         }
       },
-      x: { 
+      x: {
         grid: { display: false },
         ticks: { font: { size: 11 } }
       }
@@ -156,10 +228,24 @@ const Impact = () => {
       },
       tooltip: {
         callbacks: {
-          label: (context) => `${context.label}: ${context.raw.toLocaleString()} kg (${((context.raw / 10450) * 100).toFixed(1)}%)`
+          label: (context) => {
+            const total = wasteDistribution.data.reduce((a, b) => a + b, 0);
+            const percentage = total > 0 ? ((context.raw / total) * 100).toFixed(1) : 0;
+            return `${context.label}: ${context.raw.toLocaleString()} kg (${percentage}%)`;
+          }
         }
       }
     }
+  };
+
+  const totalWaste = wasteDistribution.data.reduce((a, b) => a + b, 0);
+
+  // Calcular percentual da meta anual
+  const getGoalPercentage = () => {
+    const totalActual = evolutionData.actual.reduce((a, b) => a + b, 0);
+    const totalGoal = evolutionData.goal.reduce((a, b) => a + b, 0);
+    if (totalGoal === 0) return 0;
+    return Math.round((totalActual / totalGoal) * 100);
   };
 
   if (loading) {
@@ -171,30 +257,39 @@ const Impact = () => {
     );
   }
 
+  if (error) {
+    return (
+      <div className="error-container">
+        <i className="fas fa-exclamation-triangle"></i>
+        <p>{error}</p>
+        <button onClick={() => loadImpactData(selectedPeriod)} className="btn-primary">Tentar Novamente</button>
+      </div>
+    );
+  }
+
   return (
     <div className="impact-container">
-      {/* Header com período e metas */}
       <div className="impact-header">
         <div>
           <h2>Impacto Ambiental</h2>
           <p className="impact-subtitle">Acompanhe o impacto positivo das suas ações</p>
         </div>
         <div className="period-selector">
-          <button 
+          <button
             className={`period-btn ${selectedPeriod === 'week' ? 'active' : ''}`}
             onClick={() => setSelectedPeriod('week')}
           >
             <i className="fas fa-calendar-week"></i>
             Semana
           </button>
-          <button 
+          <button
             className={`period-btn ${selectedPeriod === 'month' ? 'active' : ''}`}
             onClick={() => setSelectedPeriod('month')}
           >
             <i className="fas fa-calendar-alt"></i>
             Mês
           </button>
-          <button 
+          <button
             className={`period-btn ${selectedPeriod === 'year' ? 'active' : ''}`}
             onClick={() => setSelectedPeriod('year')}
           >
@@ -213,9 +308,6 @@ const Impact = () => {
           <div className="impact-content">
             <span className="impact-label">Árvores Preservadas</span>
             <span className="impact-value">{impact.treesSaved.toLocaleString()}</span>
-            <span className="impact-trend positive">
-              <i className="fas fa-arrow-up"></i> +12% este mês
-            </span>
           </div>
         </div>
 
@@ -226,9 +318,6 @@ const Impact = () => {
           <div className="impact-content">
             <span className="impact-label">Água Economizada</span>
             <span className="impact-value">{impact.waterSaved.toLocaleString()} L</span>
-            <span className="impact-trend positive">
-              <i className="fas fa-arrow-up"></i> +8% este mês
-            </span>
           </div>
         </div>
 
@@ -239,9 +328,6 @@ const Impact = () => {
           <div className="impact-content">
             <span className="impact-label">Energia Economizada</span>
             <span className="impact-value">{impact.energySaved.toLocaleString()} kWh</span>
-            <span className="impact-trend positive">
-              <i className="fas fa-arrow-up"></i> +15% este mês
-            </span>
           </div>
         </div>
 
@@ -252,9 +338,6 @@ const Impact = () => {
           <div className="impact-content">
             <span className="impact-label">CO₂ Evitado</span>
             <span className="impact-value">{impact.carbonSaved.toLocaleString()} kg</span>
-            <span className="impact-trend positive">
-              <i className="fas fa-arrow-up"></i> +10% este mês
-            </span>
           </div>
         </div>
       </div>
@@ -316,12 +399,19 @@ const Impact = () => {
             <h3>Evolução da Redução de CO₂</h3>
           </div>
           <div className="chart-wrapper">
-            <Line data={evolutionData} options={lineOptions} />
+            {evolutionData.actual.length > 0 ? (
+              <Line data={evolutionChartData} options={lineOptions} />
+            ) : (
+              <div className="no-data-message">
+                <i className="fas fa-chart-line"></i>
+                <p>Nenhum dado de evolução disponível</p>
+              </div>
+            )}
           </div>
           <div className="chart-footer">
             <div className="achievement-badge">
               <i className="fas fa-trophy"></i>
-              <span>Meta anual: 82% atingida</span>
+              <span>Meta anual: {getGoalPercentage()}% atingida</span>
             </div>
           </div>
         </div>
@@ -332,109 +422,75 @@ const Impact = () => {
             <h3>Distribuição por Tipo de Resíduo</h3>
           </div>
           <div className="chart-wrapper">
-            <Doughnut data={wasteDistributionData} options={doughnutOptions} />
+            {totalWaste > 0 ? (
+              <Doughnut data={wasteDistributionData} options={doughnutOptions} />
+            ) : (
+              <div className="no-data-message">
+                <i className="fas fa-chart-pie"></i>
+                <p>Nenhum dado de distribuição disponível</p>
+              </div>
+            )}
           </div>
           <div className="chart-footer">
             <div className="total-badge">
               <i className="fas fa-weight-hanging"></i>
-              <span>Total: 10.450 kg</span>
+              <span>Total: {totalWaste.toLocaleString()} kg</span>
             </div>
           </div>
         </div>
       </div>
 
       {/* Benefícios detalhados */}
-      <div className="benefits-section">
-        <h3>
-          <i className="fas fa-star"></i>
-          Impacto Detalhado
-        </h3>
-        <div className="benefits-grid">
-          <div className="benefit-card">
-            <div className="benefit-header">
-              <i className="fas fa-tree"></i>
-              <h4>Florestas Preservadas</h4>
-            </div>
-            <p className="benefit-description">
-              Com {impact.treesSaved.toLocaleString()} árvores preservadas, 
-              equivalentes a {Math.round(impact.treesSaved / 100)} hectares de floresta.
-            </p>
-            <div className="benefit-stats">
-              <div className="stat">
-                <span>O₂ Gerado</span>
-                <strong>{(impact.treesSaved * 118).toLocaleString()} kg/ano</strong>
+      {benefitsDetail.length > 0 && (
+        <div className="benefits-section">
+          <h3>
+            <i className="fas fa-star"></i>
+            Impacto Detalhado
+          </h3>
+          <div className="benefits-grid">
+            {benefitsDetail.map((benefit, index) => (
+              <div key={benefit.id || index} className="benefit-card">
+                <div className="benefit-header">
+                  <i className={`fas fa-${benefit.icon || 'leaf'}`}></i>
+                  <h4>{benefit.title}</h4>
+                </div>
+                <p className="benefit-description">{benefit.description}</p>
+                <div className="benefit-stats">
+                  {benefit.stats?.map((stat, idx) => (
+                    <div key={idx} className="stat">
+                      <span>{stat.label}</span>
+                      <strong>{stat.value}</strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="stat">
-                <span>Habitat Preservado</span>
-                <strong>{Math.round(impact.treesSaved * 0.5)} espécies</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="benefit-card">
-            <div className="benefit-header">
-              <i className="fas fa-water"></i>
-              <h4>Recursos Hídricos</h4>
-            </div>
-            <p className="benefit-description">
-              Economia de {impact.waterSaved.toLocaleString()} litros de água, 
-              suficiente para abastecer {Math.round(impact.waterSaved / 150)} famílias por mês.
-            </p>
-            <div className="benefit-stats">
-              <div className="stat">
-                <span>Piscinas Olímpicas</span>
-                <strong>{Math.round(impact.waterSaved / 2500000)} unidades</strong>
-              </div>
-              <div className="stat">
-                <span>Dias de consumo</span>
-                <strong>{Math.round(impact.waterSaved / 150)} dias</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="benefit-card">
-            <div className="benefit-header">
-              <i className="fas fa-bolt"></i>
-              <h4>Energia Renovável</h4>
-            </div>
-            <p className="benefit-description">
-              {impact.energySaved.toLocaleString()} kWh economizados, 
-              equivalente a {Math.round(impact.energySaved / 150)} meses de consumo residencial.
-            </p>
-            <div className="benefit-stats">
-              <div className="stat">
-                <span>Casas abastecidas</span>
-                <strong>{Math.round(impact.energySaved / 150)} meses</strong>
-              </div>
-              <div className="stat">
-                <span>Carvão evitado</span>
-                <strong>{Math.round(impact.energySaved * 0.5)} kg</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="benefit-card">
-            <div className="benefit-header">
-              <i className="fas fa-leaf"></i>
-              <h4>Qualidade do Ar</h4>
-            </div>
-            <p className="benefit-description">
-              {impact.carbonSaved.toLocaleString()} kg de CO₂ deixaram de ser emitidos, 
-              equivalente a {Math.round(impact.carbonSaved / 20)} carros populares.
-            </p>
-            <div className="benefit-stats">
-              <div className="stat">
-                <span>Árvores necessárias</span>
-                <strong>{Math.round(impact.carbonSaved / 22)} unidades</strong>
-              </div>
-              <div className="stat">
-                <span>Voos SP-Rio</span>
-                <strong>{Math.round(impact.carbonSaved / 100)} viagens</strong>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
-      </div>
+      )}
+
+      <style jsx>{`
+        .no-data-message {
+          text-align: center;
+          padding: 60px;
+          color: #999;
+        }
+        .no-data-message i {
+          font-size: 48px;
+          margin-bottom: 10px;
+        }
+        .error-container {
+          text-align: center;
+          padding: 50px;
+          background: #fff3f3;
+          border-radius: 12px;
+          color: #d32f2f;
+        }
+        .error-container i {
+          font-size: 48px;
+          margin-bottom: 15px;
+        }
+      `}</style>
     </div>
   );
 };
