@@ -283,6 +283,20 @@ async function calculateOptimizedRoute(points) {
     return { orderedPoints, totalDistance, totalWaste };
 }
 
+// Função para calcular a próxima data de coleta (próxima segunda-feira 08:00)
+function getNextCollectionDate() {
+    const now = new Date();
+    const nextMonday = new Date(now);
+    const daysUntilMonday = (8 - now.getDay()) % 7;
+    if (daysUntilMonday === 0) {
+        nextMonday.setDate(now.getDate() + 7);
+    } else {
+        nextMonday.setDate(now.getDate() + daysUntilMonday);
+    }
+    nextMonday.setHours(8, 0, 0, 0);
+    return nextMonday;
+}
+
 // ========== ROTAS DE AUTENTICAÇÃO ==========
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -421,23 +435,31 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 
         console.log(`✅ Ponto criado: ${point.name}`);
 
-        // Gerar rota automaticamente com todos os pontos
+        // Buscar todos os pontos do usuário com coordenadas
         const allPoints = await CollectionPoint.find({
             userId: req.userId,
             location: { $exists: true, $ne: null }
         });
 
+        let createdRoute = null;
+
+        // Gerar rota automaticamente se tiver pelo menos 2 pontos
         if (allPoints.length >= 2) {
             const optimized = await calculateOptimizedRoute(allPoints);
 
+            // Calcular data da próxima coleta (próxima segunda-feira 08:00)
+            const nextCollectionDate = getNextCollectionDate();
+
             const route = new Route({
                 name: `Rota dos Pontos de Coleta - ${new Date().toLocaleDateString('pt-BR')}`,
-                description: `Rota otimizada com ${allPoints.length} pontos de coleta`,
-                date: new Date(),
+                description: `Rota otimizada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
+                date: nextCollectionDate,
                 points: optimized.orderedPoints.map((p, idx) => ({
                     pointId: p._id,
                     order: idx + 1,
-                    estimatedVolume: p.currentVolume || 500
+                    estimatedVolume: p.currentVolume || 500,
+                    actualVolume: 0,
+                    collectedAt: null
                 })),
                 totalDistance: optimized.totalDistance,
                 totalWaste: optimized.totalWaste,
@@ -449,7 +471,8 @@ app.post('/api/points', authenticateToken, async (req, res) => {
             });
 
             await route.save();
-            console.log(`✅ Rota automática criada a partir dos pontos de coleta`);
+            createdRoute = route;
+            console.log(`✅ Rota automática criada com ${allPoints.length} pontos para ${nextCollectionDate.toLocaleDateString('pt-BR')} às 08:00`);
         }
 
         const responsePoint = point.toObject();
@@ -460,7 +483,8 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 
         res.status(201).json({
             point: responsePoint,
-            message: 'Ponto criado com sucesso!'
+            route: createdRoute ? { id: createdRoute._id, name: createdRoute.name, date: createdRoute.date } : null,
+            message: createdRoute ? 'Ponto criado e rota gerada automaticamente!' : 'Ponto criado com sucesso!'
         });
 
     } catch (error) {
@@ -531,37 +555,6 @@ app.put('/api/points/:id', authenticateToken, async (req, res) => {
 
         await point.save();
 
-        // Regenerar rota após atualização
-        const allPoints = await CollectionPoint.find({
-            userId: req.userId,
-            location: { $exists: true, $ne: null }
-        });
-
-        if (allPoints.length >= 2) {
-            const optimized = await calculateOptimizedRoute(allPoints);
-
-            const route = new Route({
-                name: `Rota dos Pontos de Coleta - ${new Date().toLocaleDateString('pt-BR')}`,
-                description: `Rota otimizada com ${allPoints.length} pontos de coleta`,
-                date: new Date(),
-                points: optimized.orderedPoints.map((p, idx) => ({
-                    pointId: p._id,
-                    order: idx + 1,
-                    estimatedVolume: p.currentVolume || 500
-                })),
-                totalDistance: optimized.totalDistance,
-                totalWaste: optimized.totalWaste,
-                fuelConsumption: optimized.totalDistance * 0.35,
-                carbonFootprint: optimized.totalWaste * 0.13,
-                status: 'PLANNED',
-                source: 'points',
-                userId: req.userId
-            });
-
-            await route.save();
-            console.log(`✅ Rota regenerada após atualização do ponto`);
-        }
-
         const responsePoint = point.toObject();
         if (point.location && point.location.coordinates) {
             responsePoint.latitude = point.location.coordinates[1];
@@ -598,31 +591,29 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
 
 app.get('/api/routes', authenticateToken, async (req, res) => {
     try {
-        const routes = await Route.find({ userId: req.userId }).sort({ createdAt: -1 });
+        const routes = await Route.find({ userId: req.userId }).sort({ date: 1 });
 
-        // Para cada rota, buscar os detalhes dos pontos
-        const routesWithDetails = await Promise.all(routes.map(async (route) => {
+        // Adicionar status calculado baseado na data
+        const routesWithStatus = routes.map(route => {
             const routeObj = route.toObject();
-            const pointsWithDetails = await Promise.all(route.points.map(async (point) => {
-                if (point.pointId) {
-                    const collectionPoint = await CollectionPoint.findById(point.pointId);
-                    return {
-                        ...point,
-                        pointDetails: collectionPoint ? {
-                            name: collectionPoint.name,
-                            address: collectionPoint.address,
-                            latitude: collectionPoint.location?.coordinates?.[1],
-                            longitude: collectionPoint.location?.coordinates?.[0]
-                        } : null
-                    };
-                }
-                return point;
-            }));
-            routeObj.points = pointsWithDetails;
-            return routeObj;
-        }));
+            const now = new Date();
+            const routeDate = new Date(route.date);
+            const timeDiff = routeDate - now;
+            const hoursDiff = timeDiff / (1000 * 60 * 60);
 
-        res.json(routesWithDetails);
+            let calculatedStatus = route.status;
+            if (route.status !== 'COMPLETED' && route.status !== 'CANCELLED') {
+                if (hoursDiff <= 0 && hoursDiff > -24) {
+                    calculatedStatus = 'IN_PROGRESS';
+                } else if (hoursDiff < -24) {
+                    calculatedStatus = 'DELAYED';
+                }
+            }
+
+            return { ...routeObj, calculatedStatus };
+        });
+
+        res.json(routesWithStatus);
     } catch (error) {
         console.error('❌ Erro ao listar rotas:', error);
         res.status(500).json({ error: 'Erro ao listar rotas' });
@@ -637,8 +628,18 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
         if (route.userId.toString() !== req.userId) return res.status(403).json({ error: 'Acesso não autorizado' });
 
         if (name) route.name = name;
-        if (status) route.status = status;
+        if (status) {
+            route.status = status;
+            if (status === 'COMPLETED') {
+                route.completedAt = new Date();
+            }
+        }
+
         await route.save();
+
+        // Notificar via socket
+        io.emit('route-updated', { routeId: route._id, status: route.status });
+
         res.json(route);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -670,15 +671,18 @@ app.post('/api/routes/generate-from-points', authenticateToken, async (req, res)
         }
 
         const optimized = await calculateOptimizedRoute(allPoints);
+        const nextCollectionDate = getNextCollectionDate();
 
         const route = new Route({
             name: `Rota dos Pontos de Coleta - ${new Date().toLocaleDateString('pt-BR')}`,
-            description: `Rota gerada com ${allPoints.length} pontos de coleta`,
-            date: new Date(),
+            description: `Rota gerada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
+            date: nextCollectionDate,
             points: optimized.orderedPoints.map((p, idx) => ({
                 pointId: p._id,
                 order: idx + 1,
-                estimatedVolume: p.currentVolume || 500
+                estimatedVolume: p.currentVolume || 500,
+                actualVolume: 0,
+                collectedAt: null
             })),
             totalDistance: optimized.totalDistance,
             totalWaste: optimized.totalWaste,
@@ -690,7 +694,6 @@ app.post('/api/routes/generate-from-points', authenticateToken, async (req, res)
         });
 
         await route.save();
-
         res.status(201).json(route);
 
     } catch (error) {
@@ -711,15 +714,18 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
         }
 
         const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || 0), 0);
+        const nextCollectionDate = getNextCollectionDate();
 
         const newRoute = new Route({
             name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
-            description: `Rota para ${finishedEvents.length} evento(s)`,
-            date: new Date(),
+            description: `Rota para ${finishedEvents.length} evento(s). Tempo estimado: ${finishedEvents.length} hora(s).`,
+            date: nextCollectionDate,
             points: finishedEvents.map((event, index) => ({
                 pointId: event._id,
                 order: index + 1,
-                estimatedVolume: event.estimatedWaste || 500
+                estimatedVolume: event.estimatedWaste || 500,
+                actualVolume: 0,
+                collectedAt: null
             })),
             totalWaste: totalWaste,
             carbonFootprint: totalWaste * 0.13,
@@ -745,19 +751,60 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
 // ========== ROTAS DE COLETAS ==========
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
-        const collectionData = { ...req.body, userId: req.userId };
-        const point = await CollectionPoint.findOne({ _id: collectionData.collectionPointId, userId: req.userId });
+        const { collectionPointId, wasteVolume, wasteType, notes, routeId } = req.body;
+
+        const point = await CollectionPoint.findOne({ _id: collectionPointId, userId: req.userId });
         if (!point) return res.status(404).json({ error: 'Ponto de coleta não encontrado' });
 
-        const collection = new Collection(collectionData);
+        const collection = new Collection({
+            collectionPointId,
+            routeId: routeId || null,
+            wasteVolume: Number(wasteVolume),
+            wasteType: wasteType || 'outros',
+            notes: notes || '',
+            userId: req.userId,
+            date: new Date()
+        });
+
         await collection.save();
 
-        point.currentVolume += collectionData.wasteVolume;
+        // Atualizar volume do ponto
+        point.currentVolume = (point.currentVolume || 0) + Number(wasteVolume);
         await point.save();
 
-        res.status(201).json({ collection, message: 'Coleta registrada com sucesso' });
+        // Se tiver rota associada, atualizar o volume coletado
+        if (routeId) {
+            const route = await Route.findById(routeId);
+            if (route) {
+                const pointInRoute = route.points.find(p => p.pointId.toString() === collectionPointId);
+                if (pointInRoute) {
+                    pointInRoute.actualVolume = (pointInRoute.actualVolume || 0) + Number(wasteVolume);
+                    pointInRoute.collectedAt = new Date();
+                    await route.save();
+                }
+            }
+        }
+
+        res.status(201).json({
+            success: true,
+            collection,
+            message: 'Coleta registrada com sucesso!'
+        });
     } catch (error) {
-        res.status(500).json({ error: 'Erro ao registrar coleta' });
+        console.error('❌ Erro ao registrar coleta:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/collections', authenticateToken, async (req, res) => {
+    try {
+        const collections = await Collection.find({ userId: req.userId })
+            .populate('collectionPointId')
+            .sort({ date: -1 });
+        res.json(collections);
+    } catch (error) {
+        console.error('❌ Erro ao listar coletas:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -765,44 +812,190 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
 app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
         const pointsCount = await CollectionPoint.countDocuments({ userId: req.userId });
-        const routesCount = await Route.countDocuments({ userId: req.userId, status: { $in: ['PLANNED', 'IN_PROGRESS'] } });
-        const totalWaste = 0;
-        const totalCarbon = 0;
-        res.json({ pointsCount, routesCount, totalWaste, totalCarbon });
+
+        const routesCount = await Route.countDocuments({
+            userId: req.userId,
+            status: { $in: ['PLANNED', 'IN_PROGRESS'] }
+        });
+
+        // Calcular total de resíduos coletados
+        const collections = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
+        ]);
+
+        const totalWaste = collections[0]?.totalWaste || 0;
+        const totalCarbon = Math.floor(totalWaste * 0.13);
+
+        res.json({
+            pointsCount,
+            routesCount,
+            totalWaste,
+            totalCarbon
+        });
     } catch (error) {
+        console.error('❌ Erro ao carregar stats:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.get('/api/dashboard/waste-by-type', authenticateToken, async (req, res) => {
-    res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] });
+    try {
+        const wasteByType = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            {
+                $group: {
+                    _id: { $ifNull: ['$wasteType', 'outros'] },
+                    total: { $sum: '$wasteVolume' }
+                }
+            }
+        ]);
+
+        const typeLabels = {
+            'plastico': 'Plástico',
+            'papel': 'Papel',
+            'vidro': 'Vidro',
+            'metal': 'Metal',
+            'organico': 'Orgânico',
+            'eletronico': 'Eletrônico',
+            'outros': 'Outros'
+        };
+
+        const labels = wasteByType.map(item => typeLabels[item._id] || item._id);
+        const data = wasteByType.map(item => item.total);
+
+        if (labels.length === 0) {
+            res.json({
+                labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+                data: [0, 0, 0, 0, 0]
+            });
+        } else {
+            res.json({ labels, data });
+        }
+    } catch (error) {
+        console.error('❌ Erro ao carregar resíduos por tipo:', error);
+        res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] });
+    }
 });
 
 app.get('/api/dashboard/monthly-impact', authenticateToken, async (req, res) => {
-    res.json({ labels: [], data: [] });
+    try {
+        const monthlyImpact = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
+                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
+                }
+            },
+            { $sort: { _id: 1 } },
+            { $limit: 12 }
+        ]);
+
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+        let labels = [];
+        let data = [];
+
+        if (monthlyImpact.length > 0) {
+            labels = monthlyImpact.map(item => {
+                const month = parseInt(item._id.split('-')[1]) - 1;
+                return monthNames[month];
+            });
+            data = monthlyImpact.map(item => Math.round(item.carbon));
+        } else {
+            const currentDate = new Date();
+            for (let i = 5; i >= 0; i--) {
+                const monthIndex = (currentDate.getMonth() - i + 12) % 12;
+                labels.push(monthNames[monthIndex]);
+                data.push(0);
+            }
+        }
+
+        res.json({ labels, data });
+    } catch (error) {
+        console.error('❌ Erro ao carregar impacto mensal:', error);
+        res.json({ labels: [], data: [] });
+    }
 });
 
 app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) => {
     try {
         const activities = [];
-        const recentPoints = await CollectionPoint.find({ userId: req.userId }).sort({ createdAt: -1 }).limit(5);
-        for (const point of recentPoints) {
-            activities.push({ id: point._id, type: 'point', icon: 'fa-map-marker-alt', title: `Ponto "${point.name}" criado`, date: point.createdAt, timeAgo: getTimeAgo(point.createdAt) });
+
+        // Coletas recentes
+        const recentCollections = await Collection.find()
+            .populate('collectionPointId')
+            .sort({ createdAt: -1 })
+            .limit(5);
+
+        for (const collection of recentCollections) {
+            if (collection.collectionPointId) {
+                activities.push({
+                    id: collection._id,
+                    type: 'collection',
+                    icon: 'fa-recycle',
+                    title: `${collection.wasteVolume} kg coletados em ${collection.collectionPointId.name}`,
+                    date: collection.createdAt,
+                    timeAgo: getTimeAgo(collection.createdAt)
+                });
+            }
         }
-        const recentRoutes = await Route.find({ userId: req.userId }).sort({ createdAt: -1 }).limit(5);
+
+        // Rotas recentes
+        const recentRoutes = await Route.find({ userId: req.userId })
+            .sort({ createdAt: -1 })
+            .limit(5);
+
         for (const route of recentRoutes) {
-            activities.push({ id: route._id, type: 'route', icon: 'fa-route', title: `Rota "${route.name}" criada`, date: route.createdAt, timeAgo: getTimeAgo(route.createdAt) });
+            const statusText = {
+                'PLANNED': 'planejada',
+                'IN_PROGRESS': 'iniciada',
+                'COMPLETED': 'concluída',
+                'CANCELLED': 'cancelada'
+            }[route.status] || 'criada';
+
+            activities.push({
+                id: route._id,
+                type: 'route',
+                icon: 'fa-route',
+                title: `Rota "${route.name}" ${statusText}`,
+                date: route.createdAt,
+                timeAgo: getTimeAgo(route.createdAt)
+            });
         }
+
+        // Pontos recentes
+        const recentPoints = await CollectionPoint.find({ userId: req.userId })
+            .sort({ createdAt: -1 })
+            .limit(5);
+
+        for (const point of recentPoints) {
+            activities.push({
+                id: point._id,
+                type: 'point',
+                icon: 'fa-map-marker-alt',
+                title: `Ponto de coleta "${point.name}" criado`,
+                date: point.createdAt,
+                timeAgo: getTimeAgo(point.createdAt)
+            });
+        }
+
         activities.sort((a, b) => new Date(b.date) - new Date(a.date));
         res.json({ activities: activities.slice(0, 10) });
     } catch (error) {
+        console.error('❌ Erro ao carregar atividades recentes:', error);
         res.json({ activities: [] });
     }
 });
 
 // ========== ROTAS DE EVENTOS EXTERNOS (TICKETMASTER) ==========
-
-// GET /api/events/external/search - Buscar eventos externos
 app.get('/api/events/external/search', authenticateToken, async (req, res) => {
     try {
         const { keyword, city, countryCode = 'BR', classification } = req.query;
@@ -869,7 +1062,6 @@ app.get('/api/events/external/search', authenticateToken, async (req, res) => {
     }
 });
 
-// GET /api/events/external/classification/:name - Buscar por classificação
 app.get('/api/events/external/classification/:name', authenticateToken, async (req, res) => {
     try {
         const { name } = req.params;
@@ -941,7 +1133,6 @@ app.get('/api/events/external/classification/:name', authenticateToken, async (r
     }
 });
 
-// POST /api/events/external/import/:eventId - Importar evento externo
 app.post('/api/events/external/import/:eventId', authenticateToken, async (req, res) => {
     try {
         const { eventId } = req.params;
@@ -1186,6 +1377,8 @@ app.use((err, req, res, next) => {
 server.listen(PORT, () => {
     console.log(`\n🚀 Servidor rodando na porta ${PORT}`);
     console.log(`📍 URL: http://localhost:${PORT}`);
+    console.log(`📌 POST /api/points - Criar ponto e gerar rota automática`);
+    console.log(`📌 POST /api/collections - Registrar coleta`);
     console.log(`📌 POST /api/routes/generate-from-points - Gerar rota dos pontos`);
     console.log(`📌 POST /api/routes/generate-from-events - Gerar rota de eventos`);
     console.log(`📌 GET /api/events/external/search - Buscar eventos externos`);
