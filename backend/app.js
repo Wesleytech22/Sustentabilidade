@@ -8,6 +8,7 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
+const axios = require('axios');
 
 // Importar modelos e serviços
 const User = require('./src/models/User');
@@ -297,6 +298,79 @@ function getNextCollectionDate() {
     return nextMonday;
 }
 
+// Função para buscar coordenadas por CEP (ViaCEP + Nominatim)
+async function getCoordinatesByZipCode(zipCode) {
+    try {
+        // Remove non-digits
+        const cleanZip = zipCode.replace(/\D/g, '');
+
+        // Buscar endereço pelo CEP (ViaCEP)
+        const viaCepResponse = await axios.get(`https://viacep.com.br/ws/${cleanZip}/json/`);
+
+        if (viaCepResponse.data.erro) {
+            return { error: 'CEP não encontrado' };
+        }
+
+        const address = viaCepResponse.data;
+        const fullAddress = `${address.logradouro}, ${address.bairro}, ${address.localidade} - ${address.uf}`;
+
+        // Buscar coordenadas pelo endereço (Nominatim - OpenStreetMap)
+        const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
+            params: {
+                q: fullAddress,
+                format: 'json',
+                limit: 1,
+                addressdetails: 1,
+                countrycodes: 'br'
+            },
+            headers: {
+                'User-Agent': 'EcoRoute/1.0'
+            }
+        });
+
+        if (nominatimResponse.data && nominatimResponse.data.length > 0) {
+            const location = nominatimResponse.data[0];
+            return {
+                success: true,
+                latitude: parseFloat(location.lat),
+                longitude: parseFloat(location.lon),
+                address: address.logradouro || '',
+                neighborhood: address.bairro || '',
+                city: address.localidade || '',
+                state: address.uf || '',
+                zipCode: cleanZip,
+                fullAddress: fullAddress
+            };
+        }
+
+        return { error: 'Não foi possível obter coordenadas para este CEP' };
+
+    } catch (error) {
+        console.error('❌ Erro ao buscar coordenadas:', error.message);
+        return { error: error.message };
+    }
+}
+
+// ========== ROTA DE BUSCA POR CEP ==========
+app.get('/api/geocode/zipcode/:zipcode', authenticateToken, async (req, res) => {
+    try {
+        const { zipcode } = req.params;
+        const result = await getCoordinatesByZipCode(zipcode);
+
+        if (result.error) {
+            return res.status(404).json({ error: result.error });
+        }
+
+        res.json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        console.error('❌ Erro ao buscar CEP:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ========== ROTAS DE AUTENTICAÇÃO ==========
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -405,7 +479,7 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
 // ========== ROTAS DE PONTOS DE COLETA ==========
 app.post('/api/points', authenticateToken, async (req, res) => {
     try {
-        const { name, address, city, state, capacity, latitude, longitude, wasteTypes, currentVolume } = req.body;
+        const { name, address, city, state, zipCode, capacity, latitude, longitude, wasteTypes, currentVolume } = req.body;
 
         if (!name || !address || !capacity) {
             return res.status(400).json({ error: 'Campos obrigatórios: name, address, capacity' });
@@ -416,6 +490,7 @@ app.post('/api/points', authenticateToken, async (req, res) => {
             address,
             city: city || '',
             state: state ? state.toUpperCase() : '',
+            zipCode: zipCode || '',
             capacity: Number(capacity),
             currentVolume: currentVolume || 0,
             wasteTypes: wasteTypes || [],
@@ -446,13 +521,14 @@ app.post('/api/points', authenticateToken, async (req, res) => {
         // Gerar rota automaticamente se tiver pelo menos 2 pontos
         if (allPoints.length >= 2) {
             const optimized = await calculateOptimizedRoute(allPoints);
-
-            // Calcular data da próxima coleta (próxima segunda-feira 08:00)
             const nextCollectionDate = getNextCollectionDate();
 
+            const mainPointName = allPoints[0]?.name || 'Ponto Principal';
+            const routeName = `${mainPointName} + ${allPoints.length - 1} ${allPoints.length - 1 === 1 ? 'ponto' : 'pontos'}`;
+
             const route = new Route({
-                name: `Rota dos Pontos de Coleta - ${new Date().toLocaleDateString('pt-BR')}`,
-                description: `Rota otimizada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
+                name: routeName,
+                description: `Rota otimizada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s). Pontos: ${allPoints.map(p => p.name).join(' → ')}`,
                 date: nextCollectionDate,
                 points: optimized.orderedPoints.map((p, idx) => ({
                     pointId: p._id,
@@ -472,7 +548,7 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 
             await route.save();
             createdRoute = route;
-            console.log(`✅ Rota automática criada com ${allPoints.length} pontos para ${nextCollectionDate.toLocaleDateString('pt-BR')} às 08:00`);
+            console.log(`✅ Rota automática criada: ${routeName} para ${nextCollectionDate.toLocaleDateString('pt-BR')} às 08:00`);
         }
 
         const responsePoint = point.toObject();
@@ -536,12 +612,13 @@ app.put('/api/points/:id', authenticateToken, async (req, res) => {
         const point = await CollectionPoint.findOne({ _id: req.params.id, userId: req.userId });
         if (!point) return res.status(404).json({ error: 'Ponto não encontrado' });
 
-        const { name, address, city, state, capacity, latitude, longitude, wasteTypes, status } = req.body;
+        const { name, address, city, state, zipCode, capacity, latitude, longitude, wasteTypes, status } = req.body;
 
         if (name) point.name = name;
         if (address) point.address = address;
         if (city) point.city = city;
         if (state) point.state = state?.toUpperCase();
+        if (zipCode) point.zipCode = zipCode;
         if (capacity) point.capacity = Number(capacity);
         if (wasteTypes) point.wasteTypes = wasteTypes;
         if (status) point.status = status;
@@ -593,7 +670,6 @@ app.get('/api/routes', authenticateToken, async (req, res) => {
     try {
         const routes = await Route.find({ userId: req.userId }).sort({ date: 1 });
 
-        // Adicionar status calculado baseado na data
         const routesWithStatus = routes.map(route => {
             const routeObj = route.toObject();
             const now = new Date();
@@ -637,7 +713,6 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
 
         await route.save();
 
-        // Notificar via socket
         io.emit('route-updated', { routeId: route._id, status: route.status });
 
         res.json(route);
@@ -658,7 +733,7 @@ app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// ========== ROTA PARA GERAR ROTA MANUALMENTE A PARTIR DOS PONTOS ==========
+// ========== ROTA PARA GERAR ROTA MANUALMENTE ==========
 app.post('/api/routes/generate-from-points', authenticateToken, async (req, res) => {
     try {
         const allPoints = await CollectionPoint.find({
@@ -673,9 +748,12 @@ app.post('/api/routes/generate-from-points', authenticateToken, async (req, res)
         const optimized = await calculateOptimizedRoute(allPoints);
         const nextCollectionDate = getNextCollectionDate();
 
+        const mainPointName = allPoints[0]?.name || 'Ponto Principal';
+        const routeName = `${mainPointName} + ${allPoints.length - 1} ${allPoints.length - 1 === 1 ? 'ponto' : 'pontos'}`;
+
         const route = new Route({
-            name: `Rota dos Pontos de Coleta - ${new Date().toLocaleDateString('pt-BR')}`,
-            description: `Rota gerada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
+            name: routeName,
+            description: `Rota gerada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s). Pontos: ${allPoints.map(p => p.name).join(' → ')}`,
             date: nextCollectionDate,
             points: optimized.orderedPoints.map((p, idx) => ({
                 pointId: p._id,
@@ -702,7 +780,7 @@ app.post('/api/routes/generate-from-points', authenticateToken, async (req, res)
     }
 });
 
-// ========== ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS FINALIZADOS ==========
+// ========== ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS ==========
 app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
     try {
         console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
@@ -716,9 +794,12 @@ app.post('/api/routes/generate-from-events', authenticateToken, async (req, res)
         const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || 0), 0);
         const nextCollectionDate = getNextCollectionDate();
 
+        const mainEventName = finishedEvents[0]?.name || 'Evento Principal';
+        const routeName = `${mainEventName} + ${finishedEvents.length - 1} ${finishedEvents.length - 1 === 1 ? 'evento' : 'eventos'}`;
+
         const newRoute = new Route({
-            name: `Coleta Pós-Eventos - ${new Date().toLocaleDateString('pt-BR')}`,
-            description: `Rota para ${finishedEvents.length} evento(s). Tempo estimado: ${finishedEvents.length} hora(s).`,
+            name: routeName,
+            description: `Rota para ${finishedEvents.length} evento(s). Tempo estimado: ${finishedEvents.length} hora(s). Eventos: ${finishedEvents.map(e => e.name).join(' → ')}`,
             date: nextCollectionDate,
             points: finishedEvents.map((event, index) => ({
                 pointId: event._id,
@@ -768,11 +849,9 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
 
         await collection.save();
 
-        // Atualizar volume do ponto
         point.currentVolume = (point.currentVolume || 0) + Number(wasteVolume);
         await point.save();
 
-        // Se tiver rota associada, atualizar o volume coletado
         if (routeId) {
             const route = await Route.findById(routeId);
             if (route) {
@@ -780,6 +859,13 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
                 if (pointInRoute) {
                     pointInRoute.actualVolume = (pointInRoute.actualVolume || 0) + Number(wasteVolume);
                     pointInRoute.collectedAt = new Date();
+
+                    // Verificar se todos os pontos foram coletados
+                    const allCollected = route.points.every(p => p.collectedAt);
+                    if (allCollected && route.status !== 'COMPLETED') {
+                        route.status = 'COMPLETED';
+                        route.completedAt = new Date();
+                    }
                     await route.save();
                 }
             }
@@ -798,7 +884,14 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
 
 app.get('/api/collections', authenticateToken, async (req, res) => {
     try {
-        const collections = await Collection.find({ userId: req.userId })
+        const { pointId } = req.query;
+        const filter = { userId: req.userId };
+
+        if (pointId) {
+            filter.collectionPointId = pointId;
+        }
+
+        const collections = await Collection.find(filter)
             .populate('collectionPointId')
             .sort({ date: -1 });
         res.json(collections);
@@ -818,7 +911,6 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
             status: { $in: ['PLANNED', 'IN_PROGRESS'] }
         });
 
-        // Calcular total de resíduos coletados
         const collections = await Collection.aggregate([
             { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
             { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
@@ -843,10 +935,17 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
 
 app.get('/api/dashboard/waste-by-type', authenticateToken, async (req, res) => {
     try {
+        const { pointId } = req.query;
+
+        let matchCondition = { 'point.userId': req.user._id };
+        if (pointId) {
+            matchCondition = { 'point._id': mongoose.Types.ObjectId(pointId) };
+        }
+
         const wasteByType = await Collection.aggregate([
             { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
             { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
+            { $match: matchCondition },
             {
                 $group: {
                     _id: { $ifNull: ['$wasteType', 'outros'] },
@@ -884,10 +983,17 @@ app.get('/api/dashboard/waste-by-type', authenticateToken, async (req, res) => {
 
 app.get('/api/dashboard/monthly-impact', authenticateToken, async (req, res) => {
     try {
+        const { pointId } = req.query;
+
+        let matchCondition = { 'point.userId': req.user._id };
+        if (pointId) {
+            matchCondition = { 'point._id': mongoose.Types.ObjectId(pointId) };
+        }
+
         const monthlyImpact = await Collection.aggregate([
             { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
             { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
+            { $match: matchCondition },
             {
                 $group: {
                     _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
@@ -929,7 +1035,6 @@ app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) 
     try {
         const activities = [];
 
-        // Coletas recentes
         const recentCollections = await Collection.find()
             .populate('collectionPointId')
             .sort({ createdAt: -1 })
@@ -948,7 +1053,6 @@ app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) 
             }
         }
 
-        // Rotas recentes
         const recentRoutes = await Route.find({ userId: req.userId })
             .sort({ createdAt: -1 })
             .limit(5);
@@ -971,7 +1075,6 @@ app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) 
             });
         }
 
-        // Pontos recentes
         const recentPoints = await CollectionPoint.find({ userId: req.userId })
             .sort({ createdAt: -1 })
             .limit(5);
@@ -1010,8 +1113,6 @@ app.get('/api/events/external/search', authenticateToken, async (req, res) => {
                 error: 'API Key do Ticketmaster não configurada'
             });
         }
-
-        const axios = require('axios');
 
         const params = new URLSearchParams({
             apikey: apiKey,
@@ -1077,8 +1178,6 @@ app.get('/api/events/external/classification/:name', authenticateToken, async (r
                 error: 'API Key do Ticketmaster não configurada'
             });
         }
-
-        const axios = require('axios');
 
         const params = new URLSearchParams({
             apikey: apiKey,
@@ -1148,8 +1247,6 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
                 error: 'API Key do Ticketmaster não configurada'
             });
         }
-
-        const axios = require('axios');
 
         let response;
         try {
@@ -1377,6 +1474,7 @@ app.use((err, req, res, next) => {
 server.listen(PORT, () => {
     console.log(`\n🚀 Servidor rodando na porta ${PORT}`);
     console.log(`📍 URL: http://localhost:${PORT}`);
+    console.log(`📌 GET /api/geocode/zipcode/:zipcode - Buscar coordenadas por CEP`);
     console.log(`📌 POST /api/points - Criar ponto e gerar rota automática`);
     console.log(`📌 POST /api/collections - Registrar coleta`);
     console.log(`📌 POST /api/routes/generate-from-points - Gerar rota dos pontos`);
