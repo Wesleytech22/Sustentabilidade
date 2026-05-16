@@ -199,6 +199,95 @@ const collectionSchema = new mongoose.Schema({
 }, { timestamps: true });
 const Collection = mongoose.model('Collection', collectionSchema);
 
+// ========== MODELO DE EVENTO (ADICIONADO) ==========
+const eventSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    description: String,
+    type: {
+        type: String,
+        enum: ['show', 'festa', 'feira', 'evento_esportivo', 'outro'],
+        default: 'outro'
+    },
+    address: { type: String, required: true },
+    neighborhood: String,
+    city: { type: String, required: true },
+    state: { type: String, required: true, uppercase: true },
+    zipCode: String,
+    location: {
+        type: {
+            type: String,
+            enum: ['Point'],
+            default: 'Point'
+        },
+        coordinates: {
+            type: [Number],
+            required: false,
+            index: '2dsphere'
+        }
+    },
+    startDate: { type: Date, required: true },
+    endDate: { type: Date, required: true },
+    expectedAttendees: { type: Number, required: true, default: 0 },
+    estimatedWaste: { type: Number, default: 0 },
+    wasteCollected: { type: Number, default: 0 },
+    status: {
+        type: String,
+        // ========== CORREÇÃO: Adicionado 'coleta_agendada' ao enum ==========
+        enum: ['agendado', 'planejado', 'em_andamento', 'finalizado', 'cancelado', 'coleta_agendada'],
+        default: 'agendado'
+    },
+    scheduledCollectionDate: Date,
+    routeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Route' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    externalId: { type: String, index: true, sparse: true },
+    source: {
+        type: String,
+        enum: ['manual', 'ticketmaster', 'sympla', 'eventbrite'],
+        default: 'manual'
+    },
+    venueName: String,
+    imageUrl: String,
+    eventUrl: String,
+    importedAt: Date
+}, { timestamps: true });
+
+// Método para definir coordenadas
+eventSchema.methods.setCoordinates = function (latitude, longitude) {
+    if (latitude && longitude) {
+        this.location = {
+            type: 'Point',
+            coordinates: [Number(longitude), Number(latitude)]
+        };
+    }
+    return this;
+};
+
+// Método para calcular impacto ambiental
+eventSchema.methods.calculateEnvironmentalImpact = function () {
+    const carbonPerKg = 0.13;
+    const totalWaste = this.wasteCollected || this.estimatedWaste || 0;
+
+    return {
+        totalWaste: totalWaste,
+        carbonSaved: Math.round(totalWaste * carbonPerKg),
+        treesEquivalent: Math.floor(totalWaste * 0.02),
+        recyclingRate: this.wasteCollected ? Math.round((this.wasteCollected / this.estimatedWaste) * 100) : 0
+    };
+};
+
+// Método para adicionar resíduos coletados
+eventSchema.methods.addWasteCollected = async function (amount) {
+    this.wasteCollected = (this.wasteCollected || 0) + amount;
+
+    if (this.wasteCollected >= this.estimatedWaste) {
+        this.status = 'finalizado';
+    }
+
+    return this.save();
+};
+
+const Event = mongoose.model('Event', eventSchema);
+
 // ========== MIDDLEWARE DE AUTENTICAÇÃO ==========
 const authenticateToken = async (req, res, next) => {
     try {
@@ -239,7 +328,7 @@ function getTimeAgo(date) {
 
 // Função para calcular distância entre dois pontos (Haversine)
 function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Raio da Terra em km
+    const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
@@ -259,18 +348,6 @@ async function calculateOptimizedRoute(points) {
         return { orderedPoints: [], totalDistance: 0, totalWaste: 0 };
     }
 
-    // Verificar coordenadas de cada ponto
-    points.forEach((p, idx) => {
-        console.log(`Ponto ${idx + 1}: ${p.name}`);
-        console.log(`  - Location: ${JSON.stringify(p.location)}`);
-        if (p.location && p.location.coordinates) {
-            console.log(`  - Coordenadas: lon=${p.location.coordinates[0]}, lat=${p.location.coordinates[1]}`);
-        } else {
-            console.log(`  - ⚠️ SEM COORDENADAS!`);
-        }
-    });
-
-    // Filtrar apenas pontos com coordenadas válidas
     const validPoints = points.filter(p =>
         p.location &&
         p.location.coordinates &&
@@ -344,63 +421,34 @@ async function calculateOptimizedRoute(points) {
 function getNextCollectionDate() {
     const now = new Date();
     const slaDate = new Date(now);
-
-    // Adiciona 2 dias (SLA)
     slaDate.setDate(now.getDate() + 2);
-
-    // Ajusta para horário comercial
     const adjustedDate = adjustToBusinessHours(slaDate);
-
     return adjustedDate;
 }
 
-// Função para verificar se está dentro do horário comercial
 function isWithinBusinessHours(date) {
     const hour = date.getHours();
     const day = date.getDay();
-
-    // Não é dia útil (sábado ou domingo)
-    if (day === 6 || day === 0) {
-        return false;
-    }
-
-    // Horário comercial: 08:00 às 17:00
+    if (day === 6 || day === 0) return false;
     return hour >= 8 && hour < 17;
 }
 
-// Função para ajustar data/hora para o próximo horário comercial disponível
 function adjustToBusinessHours(date) {
     const adjusted = new Date(date);
-
-    // Se for fim de semana, vai para segunda-feira 08:00
-    if (adjusted.getDay() === 6) { // Sábado
+    if (adjusted.getDay() === 6) {
         adjusted.setDate(adjusted.getDate() + 2);
         adjusted.setHours(8, 0, 0, 0);
-    } else if (adjusted.getDay() === 0) { // Domingo
+    } else if (adjusted.getDay() === 0) {
         adjusted.setDate(adjusted.getDate() + 1);
         adjusted.setHours(8, 0, 0, 0);
     }
-
-    // Se for antes das 08:00, ajusta para 08:00
-    if (adjusted.getHours() < 8) {
-        adjusted.setHours(8, 0, 0, 0);
-    }
-
-    // Se for após as 17:00, ajusta para o próximo dia útil às 08:00
+    if (adjusted.getHours() < 8) adjusted.setHours(8, 0, 0, 0);
     if (adjusted.getHours() >= 17) {
         adjusted.setDate(adjusted.getDate() + 1);
         adjusted.setHours(8, 0, 0, 0);
-
-        // Se o próximo dia for sábado, pula para segunda
-        if (adjusted.getDay() === 6) {
-            adjusted.setDate(adjusted.getDate() + 2);
-        }
-        // Se for domingo, pula para segunda
-        else if (adjusted.getDay() === 0) {
-            adjusted.setDate(adjusted.getDate() + 1);
-        }
+        if (adjusted.getDay() === 6) adjusted.setDate(adjusted.getDate() + 2);
+        else if (adjusted.getDay() === 0) adjusted.setDate(adjusted.getDate() + 1);
     }
-
     return adjusted;
 }
 
@@ -408,24 +456,18 @@ function adjustToBusinessHours(date) {
 async function getCoordinatesByZipCode(cep) {
     try {
         const cleanCep = cep.replace(/\D/g, '');
-
         if (cleanCep.length !== 8) {
             return { error: 'CEP inválido', latitude: null, longitude: null };
         }
 
         console.log(`🔍 Buscando CEP ${cleanCep}...`);
-
         let addressData = null;
         let latitude = null;
         let longitude = null;
         let source = null;
 
-        // Fonte 1: BrasilAPI (endereço + possíveis coordenadas)
         try {
-            const brasilApiResponse = await axios.get(`https://brasilapi.com.br/api/cep/v2/${cleanCep}`, {
-                timeout: 5000
-            });
-
+            const brasilApiResponse = await axios.get(`https://brasilapi.com.br/api/cep/v2/${cleanCep}`, { timeout: 5000 });
             if (brasilApiResponse.data) {
                 const data = brasilApiResponse.data;
                 addressData = {
@@ -437,24 +479,19 @@ async function getCoordinatesByZipCode(cep) {
                     fullAddress: `${data.street}, ${data.neighborhood}, ${data.city} - ${data.state}`
                 };
                 source = 'brasilapi';
-
                 if (data.location && data.location.coordinates) {
                     latitude = data.location.coordinates.latitude;
                     longitude = data.location.coordinates.longitude;
-                    if (latitude && longitude) {
-                        console.log(`📍 BrasilAPI: Coordenadas encontradas: ${latitude}, ${longitude}`);
-                    }
+                    if (latitude && longitude) console.log(`📍 BrasilAPI: Coordenadas encontradas: ${latitude}, ${longitude}`);
                 }
             }
         } catch (error) {
             console.log(`⚠️ BrasilAPI falhou:`, error.message);
         }
 
-        // Fonte 2: ViaCEP (fallback para endereço)
         if (!addressData) {
             try {
                 const viaCepResponse = await axios.get(`https://viacep.com.br/ws/${cleanCep}/json/`);
-
                 if (!viaCepResponse.data.erro) {
                     const data = viaCepResponse.data;
                     addressData = {
@@ -473,57 +510,34 @@ async function getCoordinatesByZipCode(cep) {
             }
         }
 
-        // Se conseguiu endereço, tentar buscar coordenadas no Nominatim (OpenStreetMap)
         if (addressData && (!latitude || !longitude)) {
             console.log(`🔍 Buscando coordenadas para o endereço: ${addressData.fullAddress}`);
-
             try {
                 const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
-                    params: {
-                        q: addressData.fullAddress,
-                        format: 'json',
-                        limit: 1,
-                        addressdetails: 1,
-                        countrycodes: 'br'
-                    },
-                    headers: {
-                        'User-Agent': 'EcoRoute/1.0'
-                    },
+                    params: { q: addressData.fullAddress, format: 'json', limit: 1, addressdetails: 1, countrycodes: 'br' },
+                    headers: { 'User-Agent': 'EcoRoute/1.0' },
                     timeout: 5000
                 });
-
                 if (nominatimResponse.data && nominatimResponse.data.length > 0) {
                     const location = nominatimResponse.data[0];
                     latitude = parseFloat(location.lat);
                     longitude = parseFloat(location.lon);
                     source = 'nominatim';
                     console.log(`📍 Nominatim: Coordenadas encontradas: ${latitude}, ${longitude}`);
-                } else {
-                    console.log(`⚠️ Nominatim: Não encontrou coordenadas para este endereço`);
                 }
             } catch (nominatimError) {
                 console.log(`⚠️ Nominatim falhou:`, nominatimError.message);
             }
         }
 
-        // Se ainda não tem coordenadas, tentar coordenadas da cidade
         if (addressData && (!latitude || !longitude)) {
             console.log(`🔍 Buscando coordenadas da cidade: ${addressData.city}, ${addressData.state}`);
-
             try {
                 const cityResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
-                    params: {
-                        q: `${addressData.city}, ${addressData.state}, Brasil`,
-                        format: 'json',
-                        limit: 1,
-                        countrycodes: 'br'
-                    },
-                    headers: {
-                        'User-Agent': 'EcoRoute/1.0'
-                    },
+                    params: { q: `${addressData.city}, ${addressData.state}, Brasil`, format: 'json', limit: 1, countrycodes: 'br' },
+                    headers: { 'User-Agent': 'EcoRoute/1.0' },
                     timeout: 5000
                 });
-
                 if (cityResponse.data && cityResponse.data.length > 0) {
                     const location = cityResponse.data[0];
                     latitude = parseFloat(location.lat);
@@ -536,7 +550,6 @@ async function getCoordinatesByZipCode(cep) {
             }
         }
 
-        // Retornar resultado (mesmo sem coordenadas)
         if (addressData) {
             return {
                 success: true,
@@ -566,34 +579,12 @@ app.get('/api/geocode/zipcode/:zipcode', authenticateToken, async (req, res) => 
     try {
         const { zipcode } = req.params;
         const cleanZip = zipcode.replace(/\D/g, '');
-
-        console.log(`🔍 Buscando CEP: ${cleanZip}`);
-
         if (cleanZip.length !== 8) {
             return res.status(400).json({ error: 'CEP inválido. Digite 8 dígitos.' });
         }
-
         const result = await getCoordinatesByZipCode(cleanZip);
-
-        if (result.error) {
-            return res.status(404).json({ error: result.error });
-        }
-
-        res.json({
-            success: true,
-            data: {
-                zipCode: result.zipCode,
-                address: result.address || '',
-                neighborhood: result.neighborhood || '',
-                city: result.city || '',
-                state: result.state || '',
-                latitude: result.latitude,
-                longitude: result.longitude,
-                hasCoordinates: result.hasCoordinates || false,
-                source: result.source || 'brasilapi'
-            }
-        });
-
+        if (result.error) return res.status(404).json({ error: result.error });
+        res.json({ success: true, data: { zipCode: result.zipCode, address: result.address || '', neighborhood: result.neighborhood || '', city: result.city || '', state: result.state || '', latitude: result.latitude, longitude: result.longitude, hasCoordinates: result.hasCoordinates || false, source: result.source || 'brasilapi' } });
     } catch (error) {
         console.error('❌ Erro ao buscar CEP:', error.message);
         res.status(500).json({ error: 'Erro ao buscar CEP', message: error.message });
@@ -604,46 +595,18 @@ app.get('/api/geocode/zipcode/:zipcode', authenticateToken, async (req, res) => 
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, phone, city, state, role } = req.body;
-
-        if (!email || !password || !name) {
-            return res.status(400).json({ error: 'Email, senha e nome são obrigatórios' });
-        }
-
-        if (password.length < 6) {
-            return res.status(400).json({ error: 'Senha deve ter no mínimo 6 caracteres' });
-        }
-
+        if (!email || !password || !name) return res.status(400).json({ error: 'Email, senha e nome são obrigatórios' });
+        if (password.length < 6) return res.status(400).json({ error: 'Senha deve ter no mínimo 6 caracteres' });
         const existingUser = await User.findOne({ email: email.toLowerCase() });
-        if (existingUser) {
-            return res.status(400).json({ error: 'Email já cadastrado' });
-        }
-
+        if (existingUser) return res.status(400).json({ error: 'Email já cadastrado' });
         const validRoles = ['COOPERATIVE', 'COMPANY', 'LOGISTICS', 'SUPPORT', 'ADMIN'];
         const userRole = validRoles.includes(role) ? role : 'COOPERATIVE';
-
-        const user = new User({
-            email: email.toLowerCase(),
-            password: password,
-            name: name.trim(),
-            phone: phone || '',
-            city: city || '',
-            state: state?.toUpperCase() || '',
-            role: userRole
-        });
-
+        const user = new User({ email: email.toLowerCase(), password: password, name: name.trim(), phone: phone || '', city: city || '', state: state?.toUpperCase() || '', role: userRole });
         await user.save();
-
         emailService.sendWelcomeEmail(user.email, user.name).catch(err => console.error('Erro email:', err.message));
-
-        const token = jwt.sign(
-            { id: user._id, email: user.email, role: user.role },
-            process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
-
+        const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
         const userResponse = user.toObject();
         delete userResponse.password;
-
         res.status(201).json({ success: true, user: userResponse, token, message: 'Usuário criado com sucesso!' });
     } catch (error) {
         console.error('❌ Erro no registro:', error);
@@ -654,32 +617,16 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({ error: 'Email e senha são obrigatórios' });
-        }
-
+        if (!email || !password) return res.status(400).json({ error: 'Email e senha são obrigatórios' });
         const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
-        if (!user || !user.active) {
-            return res.status(401).json({ error: 'Email ou senha inválidos' });
-        }
-
+        if (!user || !user.active) return res.status(401).json({ error: 'Email ou senha inválidos' });
         const isValid = await bcrypt.compare(password, user.password);
-        if (!isValid) {
-            return res.status(401).json({ error: 'Email ou senha inválidos' });
-        }
-
-        const token = jwt.sign(
-            { id: user._id, email: user.email, role: user.role },
-            process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
-
+        if (!isValid) return res.status(401).json({ error: 'Email ou senha inválidos' });
+        const token = jwt.sign({ id: user._id, email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
         user.lastLogin = new Date();
         await user.save();
-
         const userResponse = user.toObject();
         delete userResponse.password;
-
         res.json({ success: true, user: userResponse, token, message: 'Login realizado com sucesso' });
     } catch (error) {
         console.error('❌ Erro no login:', error);
@@ -694,11 +641,7 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
         const { name, phone, city, state } = req.body;
-        const user = await User.findByIdAndUpdate(
-            req.userId,
-            { name, phone, city, state: state?.toUpperCase() },
-            { new: true, runValidators: true }
-        );
+        const user = await User.findByIdAndUpdate(req.userId, { name, phone, city, state: state?.toUpperCase() }, { new: true, runValidators: true });
         res.json({ user, message: 'Perfil atualizado com sucesso' });
     } catch (error) {
         res.status(500).json({ error: 'Erro ao atualizar perfil' });
@@ -709,168 +652,49 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
 app.post('/api/points', authenticateToken, async (req, res) => {
     try {
         const { name, address, city, state, zipCode, capacity, wasteTypes, currentVolume } = req.body;
-
-        if (!name || !address || !capacity) {
-            return res.status(400).json({ error: 'Campos obrigatórios: name, address, capacity' });
-        }
-
-        let latitude = null;
-        let longitude = null;
-        let coordSource = 'nenhum';
-
-        // TENTATIVA 1: Buscar coordenadas pelo CEP
+        if (!name || !address || !capacity) return res.status(400).json({ error: 'Campos obrigatórios: name, address, capacity' });
+        let latitude = null, longitude = null, coordSource = 'nenhum';
         if (zipCode) {
             const geoResult = await getCoordinatesByZipCode(zipCode);
             if (geoResult.success && geoResult.latitude && geoResult.longitude) {
-                latitude = geoResult.latitude;
-                longitude = geoResult.longitude;
-                coordSource = 'cep';
+                latitude = geoResult.latitude; longitude = geoResult.longitude; coordSource = 'cep';
                 console.log(`📍 Coordenadas obtidas via CEP: ${latitude}, ${longitude}`);
             }
         }
-
-        // TENTATIVA 2: Buscar coordenadas pelo endereço completo
         if (!latitude || !longitude) {
             try {
                 const fullAddress = `${address}, ${city || 'Cotia'}, ${state || 'SP'}, Brasil`;
-                console.log(`🔍 Buscando coordenadas para: ${fullAddress}`);
-
-                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
-                    params: {
-                        q: fullAddress,
-                        format: 'json',
-                        limit: 1,
-                        countrycodes: 'br'
-                    },
-                    headers: { 'User-Agent': 'EcoRoute/1.0' },
-                    timeout: 8000
-                });
-
+                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', { params: { q: fullAddress, format: 'json', limit: 1, countrycodes: 'br' }, headers: { 'User-Agent': 'EcoRoute/1.0' }, timeout: 8000 });
                 if (nominatimResponse.data && nominatimResponse.data.length > 0) {
-                    latitude = parseFloat(nominatimResponse.data[0].lat);
-                    longitude = parseFloat(nominatimResponse.data[0].lon);
-                    coordSource = 'nominatim';
+                    latitude = parseFloat(nominatimResponse.data[0].lat); longitude = parseFloat(nominatimResponse.data[0].lon); coordSource = 'nominatim';
                     console.log(`📍 Coordenadas obtidas via Nominatim: ${latitude}, ${longitude}`);
                 }
-            } catch (error) {
-                console.log(`⚠️ Erro na busca por endereço: ${error.message}`);
-            }
+            } catch (error) { console.log(`⚠️ Erro na busca por endereço: ${error.message}`); }
         }
-
-        // TENTATIVA 3: Coordenadas padrão (Cotia/SP)
-        if (!latitude || !longitude) {
-            latitude = -23.6022;
-            longitude = -46.9194;
-            coordSource = 'default';
-            console.log(`⚠️ Usando coordenadas padrão (Cotia): ${latitude}, ${longitude}`);
-        }
-
-        // Preparar dados do ponto com location OBRIGATÓRIO
-        const pointData = {
-            name,
-            address,
-            city: city || 'Cotia',
-            state: state ? state.toUpperCase() : 'SP',
-            zipCode: zipCode || '',
-            capacity: Number(capacity),
-            currentVolume: currentVolume ? Number(currentVolume) : 0,
-            wasteTypes: wasteTypes || [],
-            userId: req.userId,
-            status: 'ACTIVE',
-            // ✅ SEMPRE salvar location (mesmo que sejam coordenadas padrão)
-            location: {
-                type: 'Point',
-                coordinates: [Number(longitude), Number(latitude)]
-            }
-        };
-
-        console.log(`📝 Salvando ponto com location: [${longitude}, ${latitude}] (fonte: ${coordSource})`);
-
+        if (!latitude || !longitude) { latitude = -23.6022; longitude = -46.9194; coordSource = 'default'; console.log(`⚠️ Usando coordenadas padrão (Cotia): ${latitude}, ${longitude}`); }
+        const pointData = { name, address, city: city || 'Cotia', state: state ? state.toUpperCase() : 'SP', zipCode: zipCode || '', capacity: Number(capacity), currentVolume: currentVolume ? Number(currentVolume) : 0, wasteTypes: wasteTypes || [], userId: req.userId, status: 'ACTIVE', location: { type: 'Point', coordinates: [Number(longitude), Number(latitude)] } };
         const point = new CollectionPoint(pointData);
         await point.save();
-
-        console.log(`✅ Ponto criado: ${point.name}`);
-
-        // Registrar coleta automaticamente se houver volume inicial
         if (currentVolume && currentVolume > 0) {
             const wasteType = (wasteTypes && wasteTypes.length > 0) ? wasteTypes[0] : 'outros';
-
-            const collection = new Collection({
-                collectionPointId: point._id,
-                wasteVolume: Number(currentVolume),
-                wasteType: wasteType,
-                notes: `Coleta inicial ao cadastrar ponto: ${point.name}`,
-                userId: req.userId,
-                date: new Date()
-            });
+            const collection = new Collection({ collectionPointId: point._id, wasteVolume: Number(currentVolume), wasteType: wasteType, notes: `Coleta inicial ao cadastrar ponto: ${point.name}`, userId: req.userId, date: new Date() });
             await collection.save();
             console.log(`✅ Coleta inicial registrada: ${currentVolume} kg de ${wasteType}`);
         }
-
-        // 🔧 Criar rota INDIVIDUAL para este ponto
         const nextCollectionDate = getNextCollectionDate();
-        const today = new Date();
-        const dateStr = today.toLocaleDateString('pt-BR');
+        const dateStr = new Date().toLocaleDateString('pt-BR');
         const routeName = `${point.name} - ${dateStr}`;
-
-        // Verificar se já existe rota para este ponto hoje
-        const existingRouteForPoint = await Route.findOne({
-            userId: req.userId,
-            source: 'points',
-            'points.pointId': point._id,
-            status: 'PLANNED',
-            date: { $gte: new Date().setHours(0, 0, 0, 0), $lt: new Date().setHours(23, 59, 59, 999) }
-        });
-
+        const existingRouteForPoint = await Route.findOne({ userId: req.userId, source: 'points', 'points.pointId': point._id, status: 'PLANNED', date: { $gte: new Date().setHours(0, 0, 0, 0), $lt: new Date().setHours(23, 59, 59, 999) } });
         let createdRoute = null;
-
         if (!existingRouteForPoint) {
-            // Criar rota individual com apenas este ponto
-            const newRoute = new Route({
-                name: routeName,
-                description: `Rota individual para coleta no ponto ${point.name}.`,
-                date: nextCollectionDate,
-                points: [{
-                    pointId: point._id,
-                    order: 1,
-                    estimatedVolume: point.currentVolume || 500,
-                    actualVolume: 0,
-                    collectedAt: null
-                }],
-                totalDistance: 0,
-                totalWaste: point.currentVolume || 0,
-                fuelConsumption: 0,
-                carbonFootprint: (point.currentVolume || 0) * 0.13,
-                status: 'PLANNED',
-                source: 'points',
-                userId: req.userId
-            });
-
+            const newRoute = new Route({ name: routeName, description: `Rota individual para coleta no ponto ${point.name}.`, date: nextCollectionDate, points: [{ pointId: point._id, order: 1, estimatedVolume: point.currentVolume || 500, actualVolume: 0, collectedAt: null }], totalDistance: 0, totalWaste: point.currentVolume || 0, fuelConsumption: 0, carbonFootprint: (point.currentVolume || 0) * 0.13, status: 'PLANNED', source: 'points', userId: req.userId });
             await newRoute.save();
             createdRoute = newRoute;
             console.log(`✅ Rota individual criada: ${routeName}`);
-        } else {
-            console.log(`⚠️ Rota individual já existe para ${point.name} hoje`);
-            createdRoute = existingRouteForPoint;
-        }
-
+        } else { console.log(`⚠️ Rota individual já existe para ${point.name} hoje`); createdRoute = existingRouteForPoint; }
         const responsePoint = point.toObject();
-        responsePoint.latitude = latitude;
-        responsePoint.longitude = longitude;
-
-        res.status(201).json({
-            point: responsePoint,
-            route: createdRoute ? {
-                id: createdRoute._id,
-                name: createdRoute.name,
-                date: createdRoute.date,
-                points: createdRoute.points.length
-            } : null,
-            message: createdRoute
-                ? `Ponto "${point.name}" criado com sua rota individual!`
-                : 'Ponto criado com sucesso!'
-        });
-
+        responsePoint.latitude = latitude; responsePoint.longitude = longitude;
+        res.status(201).json({ point: responsePoint, route: createdRoute ? { id: createdRoute._id, name: createdRoute.name, date: createdRoute.date, points: createdRoute.points.length } : null, message: createdRoute ? `Ponto "${point.name}" criado com sua rota individual!` : 'Ponto criado com sucesso!' });
     } catch (error) {
         console.error('❌ Erro ao criar ponto:', error);
         res.status(500).json({ error: error.message });
@@ -878,33 +702,20 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/points', authenticateToken, async (req, res) => {
-    try {
-        const points = await CollectionPoint.find({ userId: req.userId }).sort({ createdAt: -1 });
-        res.json(points);
-    } catch (error) {
-        console.error('❌ Erro ao listar pontos:', error);
-        res.status(500).json({ error: 'Erro ao listar pontos' });
-    }
+    try { const points = await CollectionPoint.find({ userId: req.userId }).sort({ createdAt: -1 }); res.json(points); }
+    catch (error) { console.error('❌ Erro ao listar pontos:', error); res.status(500).json({ error: 'Erro ao listar pontos' }); }
 });
 
 app.get('/api/points/:id', authenticateToken, async (req, res) => {
-    try {
-        const point = await CollectionPoint.findOne({ _id: req.params.id, userId: req.userId });
-        if (!point) return res.status(404).json({ error: 'Ponto não encontrado' });
-        res.json(point);
-    } catch (error) {
-        console.error('❌ Erro ao buscar ponto:', error);
-        res.status(500).json({ error: error.message });
-    }
+    try { const point = await CollectionPoint.findOne({ _id: req.params.id, userId: req.userId }); if (!point) return res.status(404).json({ error: 'Ponto não encontrado' }); res.json(point); }
+    catch (error) { console.error('❌ Erro ao buscar ponto:', error); res.status(500).json({ error: error.message }); }
 });
 
 app.put('/api/points/:id', authenticateToken, async (req, res) => {
     try {
         const point = await CollectionPoint.findOne({ _id: req.params.id, userId: req.userId });
         if (!point) return res.status(404).json({ error: 'Ponto não encontrado' });
-
         const { name, address, city, state, zipCode, capacity, wasteTypes, status } = req.body;
-
         if (name) point.name = name;
         if (address) point.address = address;
         if (city) point.city = city;
@@ -913,369 +724,135 @@ app.put('/api/points/:id', authenticateToken, async (req, res) => {
         if (capacity) point.capacity = Number(capacity);
         if (wasteTypes) point.wasteTypes = wasteTypes;
         if (status) point.status = status;
-
         await point.save();
         res.json({ point, message: 'Ponto atualizado com sucesso' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.delete('/api/points/:id', authenticateToken, async (req, res) => {
-    try {
-        const point = await CollectionPoint.findOneAndDelete({ _id: req.params.id, userId: req.userId });
-        if (!point) return res.status(404).json({ error: 'Ponto não encontrado' });
-        res.json({ message: 'Ponto deletado com sucesso' });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao deletar ponto' });
-    }
+    try { const point = await CollectionPoint.findOneAndDelete({ _id: req.params.id, userId: req.userId }); if (!point) return res.status(404).json({ error: 'Ponto não encontrado' }); res.json({ message: 'Ponto deletado com sucesso' }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao deletar ponto' }); }
 });
 
 // ========== ROTAS DE ROTAS ==========
 app.post('/api/routes', authenticateToken, async (req, res) => {
-    try {
-        const routeData = { ...req.body, userId: req.userId };
-        const route = new Route(routeData);
-        await route.save();
-        res.status(201).json(route);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    try { const routeData = { ...req.body, userId: req.userId }; const route = new Route(routeData); await route.save(); res.status(201).json(route); }
+    catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.get('/api/routes', authenticateToken, async (req, res) => {
-    try {
-        const routes = await Route.find({ userId: req.userId }).sort({ date: 1 });
-        res.json(routes);
-    } catch (error) {
-        console.error('❌ Erro ao listar rotas:', error);
-        res.status(500).json({ error: 'Erro ao listar rotas' });
-    }
+    try { const routes = await Route.find({ userId: req.userId }).sort({ date: 1 }); res.json(routes); }
+    catch (error) { console.error('❌ Erro ao listar rotas:', error); res.status(500).json({ error: 'Erro ao listar rotas' }); }
 });
 
-// PUT - Atualizar rota (atualizado para marcar pontos como concluídos)
 app.put('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const { name, status } = req.body;
         const route = await Route.findById(req.params.id);
-
-        if (!route) {
-            return res.status(404).json({ error: 'Rota não encontrada' });
-        }
-
-        if (route.userId.toString() !== req.userId.toString()) {
-            return res.status(403).json({ error: 'Acesso não autorizado' });
-        }
-
+        if (!route) return res.status(404).json({ error: 'Rota não encontrada' });
+        if (route.userId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Acesso não autorizado' });
         if (name) route.name = name;
-
         if (status) {
-            const oldStatus = route.status;
             route.status = status;
-
             if (status === 'COMPLETED') {
                 route.completedAt = new Date();
-
-                // MARCAR TODOS OS PONTOS COMO COLETADOS
                 for (const point of route.points) {
                     if (point.pointId) {
-                        // Atualizar o ponto de coleta
                         const collectionPoint = await CollectionPoint.findById(point.pointId);
-                        if (collectionPoint) {
-                            // Registrar coleta automaticamente se não foi registrada
-                            if (!point.collectedAt) {
-                                point.collectedAt = new Date();
-                                point.actualVolume = point.estimatedVolume || 0;
-
-                                // Registrar na tabela de coletas
-                                const collection = new Collection({
-                                    collectionPointId: point.pointId,
-                                    routeId: route._id,
-                                    wasteVolume: point.estimatedVolume || 0,
-                                    wasteType: collectionPoint.wasteTypes?.[0] || 'outros',
-                                    notes: `Coleta automática ao finalizar rota: ${route.name}`,
-                                    userId: req.userId,
-                                    date: new Date()
-                                });
-                                await collection.save();
-
-                                // Atualizar volume do ponto
-                                collectionPoint.currentVolume = (collectionPoint.currentVolume || 0) + (point.estimatedVolume || 0);
-                                await collectionPoint.save();
-
-                                console.log(`✅ Ponto ${collectionPoint.name} marcado como coletado automaticamente`);
-                            }
+                        if (collectionPoint && !point.collectedAt) {
+                            point.collectedAt = new Date();
+                            point.actualVolume = point.estimatedVolume || 0;
+                            const collection = new Collection({ collectionPointId: point.pointId, routeId: route._id, wasteVolume: point.estimatedVolume || 0, wasteType: collectionPoint.wasteTypes?.[0] || 'outros', notes: `Coleta automática ao finalizar rota: ${route.name}`, userId: req.userId, date: new Date() });
+                            await collection.save();
+                            collectionPoint.currentVolume = (collectionPoint.currentVolume || 0) + (point.estimatedVolume || 0);
+                            await collectionPoint.save();
+                            console.log(`✅ Ponto ${collectionPoint.name} marcado como coletado automaticamente`);
                         }
                     }
                 }
             }
         }
-
         await route.save();
-
-        // Emitir evento via socket
         io.emit('route-updated', { routeId: route._id, status: route.status });
-
-        // Buscar a rota atualizada com os pontos populados
         const updatedRoute = await Route.findById(route._id).populate('points.pointId');
-
         res.json(updatedRoute);
-    } catch (error) {
-        console.error('❌ Erro ao atualizar rota:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { console.error('❌ Erro ao atualizar rota:', error); res.status(500).json({ error: error.message }); }
 });
 
-// GET /api/routes/:id - Buscar rota específica com detalhes dos pontos
 app.get('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const route = await Route.findById(req.params.id).populate('points.pointId');
-
-        if (!route) {
-            return res.status(404).json({ error: 'Rota não encontrada' });
-        }
-
-        if (route.userId.toString() !== req.userId.toString()) {
-            return res.status(403).json({ error: 'Acesso não autorizado' });
-        }
-
-        // Adicionar status de coleta para cada ponto
+        if (!route) return res.status(404).json({ error: 'Rota não encontrada' });
+        if (route.userId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Acesso não autorizado' });
         const routeWithDetails = route.toObject();
-        routeWithDetails.points = routeWithDetails.points.map(point => ({
-            ...point,
-            collected: !!point.collectedAt,
-            collectedAt: point.collectedAt,
-            actualVolume: point.actualVolume || 0,
-            pointName: point.pointId?.name || 'Ponto não encontrado',
-            pointAddress: point.pointId?.address || 'Endereço não informado'
-        }));
-
+        routeWithDetails.points = routeWithDetails.points.map(point => ({ ...point, collected: !!point.collectedAt, collectedAt: point.collectedAt, actualVolume: point.actualVolume || 0, pointName: point.pointId?.name || 'Ponto não encontrado', pointAddress: point.pointId?.address || 'Endereço não informado' }));
         res.json(routeWithDetails);
-    } catch (error) {
-        console.error('❌ Erro ao buscar rota:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { console.error('❌ Erro ao buscar rota:', error); res.status(500).json({ error: error.message }); }
 });
 
 app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
-    try {
-        const route = await Route.findById(req.params.id);
-        if (!route) return res.status(404).json({ error: 'Rota não encontrada' });
-        if (route.userId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Acesso não autorizado' });
-        await route.deleteOne();
-        res.json({ message: 'Rota removida com sucesso' });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao deletar rota' });
-    }
+    try { const route = await Route.findById(req.params.id); if (!route) return res.status(404).json({ error: 'Rota não encontrada' }); if (route.userId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Acesso não autorizado' }); await route.deleteOne(); res.json({ message: 'Rota removida com sucesso' }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao deletar rota' }); }
 });
 
-// ROTA PARA VINCULAR PONTOS SELECIONADOS
 app.post('/api/routes/link-points', authenticateToken, async (req, res) => {
     try {
         const { pointIds, routeName } = req.body;
-
-        if (!pointIds || pointIds.length < 2) {
-            return res.status(400).json({ error: 'Selecione pelo menos 2 pontos de coleta' });
-        }
-
-        const selectedPoints = await CollectionPoint.find({
-            _id: { $in: pointIds },
-            userId: req.userId,
-            location: { $exists: true, $ne: null }
-        });
-
-        if (selectedPoints.length < 2) {
-            return res.status(400).json({ error: 'Pontos selecionados não possuem coordenadas' });
-        }
-
-        // Calcular rota otimizada com distâncias
+        if (!pointIds || pointIds.length < 2) return res.status(400).json({ error: 'Selecione pelo menos 2 pontos de coleta' });
+        const selectedPoints = await CollectionPoint.find({ _id: { $in: pointIds }, userId: req.userId, location: { $exists: true, $ne: null } });
+        if (selectedPoints.length < 2) return res.status(400).json({ error: 'Pontos selecionados não possuem coordenadas' });
         const optimized = await calculateOptimizedRoute(selectedPoints);
         const nextCollectionDate = getNextCollectionDate();
-
         const mainPointName = selectedPoints[0]?.name || 'Pontos de Coleta';
         const routeNameFinal = routeName || `${mainPointName} e mais ${selectedPoints.length - 1} pontos`;
-
-        // Verificar se já existe uma rota combinada
-        let existingRoute = await Route.findOne({
-            userId: req.userId,
-            source: 'points',
-            status: 'PLANNED'
-        });
-
+        let existingRoute = await Route.findOne({ userId: req.userId, source: 'points', status: 'PLANNED' });
         let route;
-
-        const routeData = {
-            name: routeNameFinal,
-            description: `Rota otimizada com ${selectedPoints.length} pontos de coleta. Distância total: ${optimized.totalDistance} km.`,
-            date: nextCollectionDate,
-            points: optimized.orderedPoints.map((p, idx) => ({
-                pointId: p._id,
-                order: idx + 1,
-                estimatedVolume: p.currentVolume || 500,
-                actualVolume: 0,
-                collectedAt: null
-            })),
-            totalDistance: optimized.totalDistance,
-            totalWaste: optimized.totalWaste,
-            fuelConsumption: optimized.fuelConsumption,
-            carbonFootprint: optimized.carbonFootprint,
-            status: 'PLANNED',
-            source: 'points',
-            userId: req.userId
-        };
-
-        if (existingRoute) {
-            Object.assign(existingRoute, routeData);
-            await existingRoute.save();
-            route = existingRoute;
-            console.log(`✅ Rota atualizada: ${routeNameFinal}`);
-        } else {
-            route = new Route(routeData);
-            await route.save();
-            console.log(`✅ Rota criada: ${routeNameFinal}`);
-        }
-
-        console.log(`📊 Métricas: ${optimized.totalDistance} km, ${optimized.fuelConsumption} L combustível`);
-
-        res.json({
-            success: true,
-            route: {
-                id: route._id,
-                name: route.name,
-                points: route.points.length,
-                totalDistance: route.totalDistance,
-                totalWaste: route.totalWaste,
-                fuelConsumption: route.fuelConsumption,
-                date: route.date
-            },
-            message: `Rota "${route.name}" criada/atualizada com ${selectedPoints.length} pontos! Distância: ${optimized.totalDistance} km`
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao vincular pontos:', error);
-        res.status(500).json({ error: error.message });
-    }
+        const routeData = { name: routeNameFinal, description: `Rota otimizada com ${selectedPoints.length} pontos de coleta. Distância total: ${optimized.totalDistance} km.`, date: nextCollectionDate, points: optimized.orderedPoints.map((p, idx) => ({ pointId: p._id, order: idx + 1, estimatedVolume: p.currentVolume || 500, actualVolume: 0, collectedAt: null })), totalDistance: optimized.totalDistance, totalWaste: optimized.totalWaste, fuelConsumption: optimized.fuelConsumption, carbonFootprint: optimized.carbonFootprint, status: 'PLANNED', source: 'points', userId: req.userId };
+        if (existingRoute) { Object.assign(existingRoute, routeData); await existingRoute.save(); route = existingRoute; console.log(`✅ Rota atualizada: ${routeNameFinal}`); }
+        else { route = new Route(routeData); await route.save(); console.log(`✅ Rota criada: ${routeNameFinal}`); }
+        res.json({ success: true, route: { id: route._id, name: route.name, points: route.points.length, totalDistance: route.totalDistance, totalWaste: route.totalWaste, fuelConsumption: route.fuelConsumption, date: route.date }, message: `Rota "${route.name}" criada/atualizada com ${selectedPoints.length} pontos! Distância: ${optimized.totalDistance} km` });
+    } catch (error) { console.error('❌ Erro ao vincular pontos:', error); res.status(500).json({ error: error.message }); }
 });
 
-// ========== ROTA PARA GERAR ROTA MANUALMENTE ==========
 app.post('/api/routes/generate-from-points', authenticateToken, async (req, res) => {
     try {
-        const allPoints = await CollectionPoint.find({
-            userId: req.userId,
-            location: { $exists: true, $ne: null }
-        });
-
-        if (allPoints.length < 2) {
-            return res.status(400).json({ error: 'Adicione pelo menos 2 pontos de coleta com coordenadas' });
-        }
-
+        const allPoints = await CollectionPoint.find({ userId: req.userId, location: { $exists: true, $ne: null } });
+        if (allPoints.length < 2) return res.status(400).json({ error: 'Adicione pelo menos 2 pontos de coleta com coordenadas' });
         const optimized = await calculateOptimizedRoute(allPoints);
         const nextCollectionDate = getNextCollectionDate();
-
         const mainPointName = allPoints[0]?.name || 'Ponto Principal';
         const routeName = `${mainPointName} + ${allPoints.length - 1} ${allPoints.length - 1 === 1 ? 'ponto' : 'pontos'}`;
-
-        const route = new Route({
-            name: routeName,
-            description: `Rota gerada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
-            date: nextCollectionDate,
-            points: optimized.orderedPoints.map((p, idx) => ({
-                pointId: p._id,
-                order: idx + 1,
-                estimatedVolume: p.currentVolume || 500,
-                actualVolume: 0,
-                collectedAt: null
-            })),
-            totalDistance: optimized.totalDistance,
-            totalWaste: optimized.totalWaste,
-            fuelConsumption: optimized.totalDistance * 0.35,
-            carbonFootprint: optimized.totalWaste * 0.13,
-            status: 'PLANNED',
-            source: 'points',
-            userId: req.userId
-        });
-
+        const route = new Route({ name: routeName, description: `Rota gerada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`, date: nextCollectionDate, points: optimized.orderedPoints.map((p, idx) => ({ pointId: p._id, order: idx + 1, estimatedVolume: p.currentVolume || 500, actualVolume: 0, collectedAt: null })), totalDistance: optimized.totalDistance, totalWaste: optimized.totalWaste, fuelConsumption: optimized.totalDistance * 0.35, carbonFootprint: optimized.totalWaste * 0.13, status: 'PLANNED', source: 'points', userId: req.userId });
         await route.save();
         res.status(201).json(route);
-
-    } catch (error) {
-        console.error('❌ Erro ao gerar rota:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { console.error('❌ Erro ao gerar rota:', error); res.status(500).json({ error: error.message }); }
 });
 
-// ========== ENDPOINT - GERAR ROTA A PARTIR DE EVENTOS ==========
 app.post('/api/routes/generate-from-events', authenticateToken, async (req, res) => {
     try {
-        console.log('🔍 Buscando eventos finalizados para o usuário:', req.userId);
-        const Event = require('./src/models/Events');
-        const finishedEvents = await Event.find({ userId: req.userId, status: 'finalizado' });
-
-        if (finishedEvents.length === 0) {
-            return res.status(404).json({ error: 'Nenhum evento finalizado encontrado' });
-        }
-
+        const EventsModel = require('./src/models/Events');
+        const finishedEvents = await EventsModel.find({ userId: req.userId, status: 'finalizado' });
+        if (finishedEvents.length === 0) return res.status(404).json({ error: 'Nenhum evento finalizado encontrado' });
         const totalWaste = finishedEvents.reduce((sum, e) => sum + (e.estimatedWaste || 0), 0);
         const nextCollectionDate = getNextCollectionDate();
-
         const mainEventName = finishedEvents[0]?.name || 'Evento Principal';
         const routeName = `${mainEventName} + ${finishedEvents.length - 1} ${finishedEvents.length - 1 === 1 ? 'evento' : 'eventos'}`;
-
-        const newRoute = new Route({
-            name: routeName,
-            description: `Rota para ${finishedEvents.length} evento(s). Tempo estimado: ${finishedEvents.length} hora(s).`,
-            date: nextCollectionDate,
-            points: finishedEvents.map((event, index) => ({
-                pointId: event._id,
-                order: index + 1,
-                estimatedVolume: event.estimatedWaste || 500,
-                actualVolume: 0,
-                collectedAt: null
-            })),
-            totalWaste: totalWaste,
-            carbonFootprint: totalWaste * 0.13,
-            status: 'PLANNED',
-            source: 'events',
-            userId: req.userId,
-            eventsSummary: finishedEvents.map(event => ({
-                eventId: event._id,
-                eventName: event.name,
-                eventDate: event.startDate,
-                wasteCollected: event.estimatedWaste || 0
-            }))
-        });
-
+        const newRoute = new Route({ name: routeName, description: `Rota para ${finishedEvents.length} evento(s). Tempo estimado: ${finishedEvents.length} hora(s).`, date: nextCollectionDate, points: finishedEvents.map((event, index) => ({ pointId: event._id, order: index + 1, estimatedVolume: event.estimatedWaste || 500, actualVolume: 0, collectedAt: null })), totalWaste: totalWaste, carbonFootprint: totalWaste * 0.13, status: 'PLANNED', source: 'events', userId: req.userId, eventsSummary: finishedEvents.map(event => ({ eventId: event._id, eventName: event.name, eventDate: event.startDate, wasteCollected: event.estimatedWaste || 0 })) });
         await newRoute.save();
         res.status(201).json(newRoute);
-    } catch (error) {
-        console.error('❌ Erro ao gerar rota:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { console.error('❌ Erro ao gerar rota:', error); res.status(500).json({ error: error.message }); }
 });
 
 // ========== ROTAS DE COLETAS ==========
 app.post('/api/collections', authenticateToken, async (req, res) => {
     try {
         const { collectionPointId, wasteVolume, wasteType, notes, routeId } = req.body;
-
         const point = await CollectionPoint.findOne({ _id: collectionPointId, userId: req.userId });
         if (!point) return res.status(404).json({ error: 'Ponto de coleta não encontrado' });
-
-        const collection = new Collection({
-            collectionPointId,
-            routeId: routeId || null,
-            wasteVolume: Number(wasteVolume),
-            wasteType: wasteType || 'outros',
-            notes: notes || '',
-            userId: req.userId,
-            date: new Date()
-        });
-
+        const collection = new Collection({ collectionPointId, routeId: routeId || null, wasteVolume: Number(wasteVolume), wasteType: wasteType || 'outros', notes: notes || '', userId: req.userId, date: new Date() });
         await collection.save();
-
         point.currentVolume = (point.currentVolume || 0) + Number(wasteVolume);
         await point.save();
-
         if (routeId) {
             const route = await Route.findById(routeId);
             if (route) {
@@ -1283,45 +860,19 @@ app.post('/api/collections', authenticateToken, async (req, res) => {
                 if (pointInRoute) {
                     pointInRoute.actualVolume = (pointInRoute.actualVolume || 0) + Number(wasteVolume);
                     pointInRoute.collectedAt = new Date();
-
                     const allCollected = route.points.every(p => p.collectedAt);
-                    if (allCollected && route.status !== 'COMPLETED') {
-                        route.status = 'COMPLETED';
-                        route.completedAt = new Date();
-                    }
+                    if (allCollected && route.status !== 'COMPLETED') { route.status = 'COMPLETED'; route.completedAt = new Date(); }
                     await route.save();
                 }
             }
         }
-
-        res.status(201).json({
-            success: true,
-            collection,
-            message: 'Coleta registrada com sucesso!'
-        });
-    } catch (error) {
-        console.error('❌ Erro ao registrar coleta:', error);
-        res.status(500).json({ error: error.message });
-    }
+        res.status(201).json({ success: true, collection, message: 'Coleta registrada com sucesso!' });
+    } catch (error) { console.error('❌ Erro ao registrar coleta:', error); res.status(500).json({ error: error.message }); }
 });
 
 app.get('/api/collections', authenticateToken, async (req, res) => {
-    try {
-        const { pointId } = req.query;
-        const filter = { userId: req.userId };
-
-        if (pointId) {
-            filter.collectionPointId = pointId;
-        }
-
-        const collections = await Collection.find(filter)
-            .populate('collectionPointId')
-            .sort({ date: -1 });
-        res.json(collections);
-    } catch (error) {
-        console.error('❌ Erro ao listar coletas:', error);
-        res.status(500).json({ error: error.message });
-    }
+    try { const { pointId } = req.query; const filter = { userId: req.userId }; if (pointId) filter.collectionPointId = pointId; const collections = await Collection.find(filter).populate('collectionPointId').sort({ date: -1 }); res.json(collections); }
+    catch (error) { console.error('❌ Erro ao listar coletas:', error); res.status(500).json({ error: error.message }); }
 });
 
 // ========== ROTAS DE DASHBOARD ==========
@@ -1329,448 +880,555 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
         const pointsCount = await CollectionPoint.countDocuments({ userId: req.userId });
         const routesCount = await Route.countDocuments({ userId: req.userId, status: { $in: ['PLANNED', 'IN_PROGRESS'] } });
-
-        const collections = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
-        ]);
-
+        const collections = await Collection.aggregate([{ $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } }, { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } }, { $match: { 'point.userId': req.user._id } }, { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }]);
         const totalWaste = collections[0]?.totalWaste || 0;
         const totalCarbon = Math.floor(totalWaste * 0.13);
-
         res.json({ pointsCount, routesCount, totalWaste, totalCarbon });
-    } catch (error) {
-        console.error('❌ Erro ao carregar stats:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { console.error('❌ Erro ao carregar stats:', error); res.status(500).json({ error: error.message }); }
 });
 
 app.get('/api/dashboard/waste-by-type', authenticateToken, async (req, res) => {
     try {
-        const wasteByType = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: { $ifNull: ['$wasteType', 'outros'] }, total: { $sum: '$wasteVolume' } } },
-            { $sort: { total: -1 } }
-        ]);
-
-        const typeLabels = {
-            'plastico': 'Plástico',
-            'papel': 'Papel',
-            'vidro': 'Vidro',
-            'metal': 'Metal',
-            'organico': 'Orgânico',
-            'eletronico': 'Eletrônico',
-            'outros': 'Outros'
-        };
-
+        const wasteByType = await Collection.aggregate([{ $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } }, { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } }, { $match: { 'point.userId': req.user._id } }, { $group: { _id: { $ifNull: ['$wasteType', 'outros'] }, total: { $sum: '$wasteVolume' } } }, { $sort: { total: -1 } }]);
+        const typeLabels = { 'plastico': 'Plástico', 'papel': 'Papel', 'vidro': 'Vidro', 'metal': 'Metal', 'organico': 'Orgânico', 'eletronico': 'Eletrônico', 'outros': 'Outros' };
         const labels = wasteByType.map(item => typeLabels[item._id] || item._id);
         const data = wasteByType.map(item => item.total);
-
-        if (labels.length === 0) {
-            res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] });
-        } else {
-            res.json({ labels, data });
-        }
-    } catch (error) {
-        res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] });
-    }
+        if (labels.length === 0) res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] });
+        else res.json({ labels, data });
+    } catch (error) { res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] }); }
 });
 
 app.get('/api/dashboard/monthly-impact', authenticateToken, async (req, res) => {
     try {
-        const monthlyImpact = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } }, carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } } } },
-            { $sort: { _id: 1 } },
-            { $limit: 12 }
-        ]);
-
+        const monthlyImpact = await Collection.aggregate([{ $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } }, { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } }, { $match: { 'point.userId': req.user._id } }, { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } }, carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } } } }, { $sort: { _id: 1 } }, { $limit: 12 }]);
         const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
         const labels = monthlyImpact.map(item => monthNames[parseInt(item._id.split('-')[1]) - 1]);
         const data = monthlyImpact.map(item => Math.round(item.carbon));
-
         res.json({ labels, data });
-    } catch (error) {
-        res.json({ labels: [], data: [] });
-    }
+    } catch (error) { res.json({ labels: [], data: [] }); }
 });
 
 app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) => {
     try {
         const activities = [];
         const recentPoints = await CollectionPoint.find({ userId: req.userId }).sort({ createdAt: -1 }).limit(5);
-        for (const point of recentPoints) {
-            activities.push({ id: point._id, type: 'point', icon: 'fa-map-marker-alt', title: `Ponto "${point.name}" criado`, date: point.createdAt, timeAgo: getTimeAgo(point.createdAt) });
-        }
+        for (const point of recentPoints) activities.push({ id: point._id, type: 'point', icon: 'fa-map-marker-alt', title: `Ponto "${point.name}" criado`, date: point.createdAt, timeAgo: getTimeAgo(point.createdAt) });
         const recentRoutes = await Route.find({ userId: req.userId }).sort({ createdAt: -1 }).limit(5);
-        for (const route of recentRoutes) {
-            activities.push({ id: route._id, type: 'route', icon: 'fa-route', title: `Rota "${route.name}" criada`, date: route.createdAt, timeAgo: getTimeAgo(route.createdAt) });
-        }
+        for (const route of recentRoutes) activities.push({ id: route._id, type: 'route', icon: 'fa-route', title: `Rota "${route.name}" criada`, date: route.createdAt, timeAgo: getTimeAgo(route.createdAt) });
         activities.sort((a, b) => new Date(b.date) - new Date(a.date));
         res.json({ activities: activities.slice(0, 10) });
-    } catch (error) {
-        res.json({ activities: [] });
-    }
+    } catch (error) { res.json({ activities: [] }); }
 });
 
 // ========== ROTAS DE IMPACTO AMBIENTAL ==========
-
-// GET /api/impact/summary - Resumo do impacto
 app.get('/api/impact/summary', authenticateToken, async (req, res) => {
     try {
         const { pointId, date } = req.query;
-
-        console.log('🔍 IMPACT SUMMARY - userId:', req.user._id.toString());
-        console.log('  date:', date);
-
-        // Construir filtro base
         let filter = { userId: req.user._id };
-
-        // CORREÇÃO: Filtrar por data considerando o timezone local
         if (date) {
-            // Criar datas no timezone local (Brasil)
             const [year, month, day] = date.split('-');
             const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
             const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
-
             filter.date = { $gte: startDate, $lte: endDate };
-            console.log('  Filtro data (UTC):', startDate, 'até', endDate);
         }
-
-        if (pointId) {
-            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
-            console.log('  Filtro ponto:', pointId);
-        }
-
-        console.log('  Filter:', JSON.stringify(filter, null, 2));
-
-        // Buscar coletas
+        if (pointId) filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
         const collections = await Collection.find(filter);
-        console.log(`  Coletas encontradas: ${collections.length}`);
-
         let totalWaste = 0;
-        collections.forEach(c => {
-            totalWaste += c.wasteVolume || 0;
-            console.log(`    - ${c.date}: ${c.wasteVolume} kg (${c.wasteType})`);
-        });
-
-        console.log(`  Total de resíduos: ${totalWaste} kg`);
-
+        collections.forEach(c => totalWaste += c.wasteVolume || 0);
         const treesSaved = Math.floor(totalWaste * 0.02);
         const waterSaved = totalWaste * 5;
         const energySaved = totalWaste * 0.35;
         const carbonSaved = totalWaste * 0.13;
+        res.json({ treesSaved, waterSaved: Math.floor(waterSaved), energySaved: Math.floor(energySaved), carbonSaved: Math.floor(carbonSaved), recyclingRate: totalWaste > 0 ? Math.min(95, Math.floor((totalWaste / (totalWaste + 1000)) * 100)) : 0, co2Reduction: Math.floor(carbonSaved), fuelSaved: Math.floor(totalWaste * 0.15), wasteDiverted: Math.floor(totalWaste) });
+    } catch (error) { console.error('❌ Erro ao carregar resumo de impacto:', error); res.status(500).json({ error: error.message }); }
+});
 
-        res.json({
-            treesSaved,
-            waterSaved: Math.floor(waterSaved),
-            energySaved: Math.floor(energySaved),
-            carbonSaved: Math.floor(carbonSaved),
-            recyclingRate: totalWaste > 0 ? Math.min(95, Math.floor((totalWaste / (totalWaste + 1000)) * 100)) : 0,
-            co2Reduction: Math.floor(carbonSaved),
-            fuelSaved: Math.floor(totalWaste * 0.15),
-            wasteDiverted: Math.floor(totalWaste)
+app.get('/api/impact/evolution', authenticateToken, async (req, res) => {
+    try {
+        const { pointId, date } = req.query;
+        let collections = await Collection.find({ userId: req.user._id }).lean();
+        if (pointId && pointId !== 'all' && pointId !== 'null' && pointId !== 'undefined' && pointId !== '') collections = collections.filter(c => c.collectionPointId && c.collectionPointId.toString() === pointId);
+        if (collections.length === 0) return res.json({ labels: [], actual: [], goal: [] });
+        const monthlyData = {};
+        collections.forEach(collection => {
+            const collectionDate = new Date(collection.date);
+            const monthKey = `${collectionDate.getFullYear()}-${String(collectionDate.getMonth() + 1).padStart(2, '0')}`;
+            const carbonSaved = (collection.wasteVolume || 0) * 0.13;
+            monthlyData[monthKey] = (monthlyData[monthKey] || 0) + carbonSaved;
         });
+        let baseDate = new Date();
+        if (date) baseDate = new Date(date);
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        const labels = [];
+        const actual = [];
+        for (let i = 11; i >= 0; i--) {
+            const currentDate = new Date(baseDate);
+            currentDate.setMonth(baseDate.getMonth() - i);
+            const monthKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+            labels.push(monthNames[currentDate.getMonth()]);
+            actual.push(Math.round(monthlyData[monthKey] || 0));
+        }
+        const goal = actual.map(value => Math.round(value * 1.2));
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.json({ labels, actual, goal });
+    } catch (error) { console.error('❌ Erro:', error); res.setHeader('Cache-Control', 'no-cache'); res.status(500).json({ error: error.message, labels: [], actual: [], goal: [] }); }
+});
+
+app.get('/api/impact/waste-distribution', authenticateToken, async (req, res) => {
+    try {
+        const { pointId, date } = req.query;
+        let filter = { userId: req.user._id };
+        if (date) {
+            const [year, month, day] = date.split('-');
+            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+            filter.date = { $gte: startDate, $lte: endDate };
+        }
+        if (pointId) filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
+        const distribution = await Collection.aggregate([{ $match: filter }, { $group: { _id: '$wasteType', total: { $sum: '$wasteVolume' } } }, { $sort: { total: -1 } }]);
+        const typeLabels = { 'plastico': 'Plástico', 'papel': 'Papel', 'vidro': 'Vidro', 'metal': 'Metal', 'organico': 'Orgânico', 'eletronico': 'Eletrônico', 'outros': 'Outros' };
+        const labels = distribution.map(d => typeLabels[d._id] || d._id);
+        const data = distribution.map(d => d.total);
+        res.json({ labels, data });
+    } catch (error) { console.error('❌ Erro ao carregar distribuição de resíduos:', error); res.json({ labels: [], data: [] }); }
+});
+
+app.get('/api/impact/benefits', authenticateToken, async (req, res) => {
+    try {
+        const { pointId, date } = req.query;
+        let filter = { userId: req.user._id };
+        if (date) {
+            const [year, month, day] = date.split('-');
+            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+            filter.date = { $gte: startDate, $lte: endDate };
+        }
+        if (pointId) filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
+        const collections = await Collection.find(filter);
+        const totalWaste = collections.reduce((sum, c) => sum + (c.wasteVolume || 0), 0);
+        const treesSaved = Math.floor(totalWaste * 0.02);
+        const waterSaved = totalWaste * 5;
+        const energySaved = totalWaste * 0.35;
+        const carbonSaved = totalWaste * 0.13;
+        const benefits = [
+            { id: 'forests', icon: 'tree', title: 'Florestas Preservadas', description: `Com ${treesSaved.toLocaleString()} árvores preservadas, equivalentes a ${Math.floor(treesSaved / 100)} hectares de floresta.`, stats: [{ label: 'O₂ Gerado', value: `${(treesSaved * 118).toLocaleString()} kg/ano` }, { label: 'Habitat Preservado', value: `${Math.floor(treesSaved * 0.5)} espécies` }] },
+            { id: 'water', icon: 'water', title: 'Recursos Hídricos', description: `Economia de ${Math.floor(waterSaved).toLocaleString()} litros de água, suficiente para abastecer ${Math.floor(waterSaved / 150)} famílias por mês.`, stats: [{ label: 'Piscinas Olímpicas', value: `${Math.floor(waterSaved / 2500000)} unidades` }, { label: 'Dias de consumo', value: `${Math.floor(waterSaved / 150)} dias` }] },
+            { id: 'energy', icon: 'bolt', title: 'Energia Renovável', description: `${Math.floor(energySaved).toLocaleString()} kWh economizados, equivalente a ${Math.floor(energySaved / 150)} meses de consumo residencial.`, stats: [{ label: 'Casas abastecidas', value: `${Math.floor(energySaved / 150)} meses` }, { label: 'Carvão evitado', value: `${Math.floor(energySaved * 0.5)} kg` }] },
+            { id: 'air', icon: 'leaf', title: 'Qualidade do Ar', description: `${Math.floor(carbonSaved).toLocaleString()} kg de CO₂ deixaram de ser emitidos, equivalente a ${Math.floor(carbonSaved / 20)} carros populares.`, stats: [{ label: 'Árvores necessárias', value: `${Math.floor(carbonSaved / 22)} unidades` }, { label: 'Voos SP-Rio', value: `${Math.floor(carbonSaved / 100)} viagens` }] }
+        ];
+        res.json({ benefits });
+    } catch (error) { console.error('❌ Erro ao carregar benefícios:', error); res.json({ benefits: [] }); }
+});
+
+// ========== ROTAS DE EVENTOS EXTERNOS (CORRIGIDAS) ==========
+app.get('/api/events/external/search', authenticateToken, async (req, res) => {
+    try {
+        const { keyword, city, size = 20 } = req.query;
+        console.log('🔍 Buscando eventos:', { keyword, city });
+        const ticketmasterApiKey = process.env.TICKETMASTER_API_KEY;
+        if (!ticketmasterApiKey) {
+            console.error('❌ TICKETMASTER_API_KEY não configurada');
+            return res.status(500).json({ error: 'API do Ticketmaster não configurada', events: [], total: 0 });
+        }
+        let url = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${ticketmasterApiKey}&countryCode=BR&size=${size}&sort=date,asc`;
+        if (keyword) url += `&keyword=${encodeURIComponent(keyword)}`;
+        if (city) url += `&city=${encodeURIComponent(city)}`;
+        const response = await axios.get(url, { timeout: 15000 });
+        if (response.data._embedded && response.data._embedded.events) {
+            const events = response.data._embedded.events.map(event => {
+                const venue = event._embedded?.venues?.[0];
+                const classification = event.classifications?.[0]?.segment?.name || '';
+                let expectedAttendees = 5000, estimatedWaste = 2500;
+                if (classification === 'Sports') { expectedAttendees = 20000; estimatedWaste = 10000; }
+                else if (classification === 'Music') { expectedAttendees = 8000; estimatedWaste = 4000; }
+                else if (classification === 'Arts & Theatre') { expectedAttendees = 2000; estimatedWaste = 1000; }
+                return {
+                    externalId: event.id, name: event.name, description: event.info || event.description || '',
+                    startDate: event.dates?.start?.localDate || new Date().toISOString().split('T')[0],
+                    endDate: event.dates?.end?.localDate || event.dates?.start?.localDate || new Date().toISOString().split('T')[0],
+                    venueName: venue?.name || '', address: venue?.address?.line1 || '', city: venue?.city?.name || '',
+                    state: venue?.state?.stateCode || '', zipCode: venue?.postalCode || '',
+                    imageUrl: event.images?.[0]?.url || '', eventUrl: event.url || '',
+                    classification: classification, expectedAttendees: expectedAttendees, estimatedWaste: estimatedWaste
+                };
+            });
+            console.log(`✅ Encontrados ${events.length} eventos`);
+            res.json({ events, total: events.length });
+        } else { res.json({ events: [], total: 0 }); }
     } catch (error) {
-        console.error('❌ Erro ao carregar resumo de impacto:', error);
+        console.error('❌ Erro ao buscar eventos:', error.message);
+        res.status(500).json({ error: `Erro ao buscar eventos: ${error.message}`, events: [], total: 0 });
+    }
+});
+
+app.get('/api/events/external/classification/:name', authenticateToken, async (req, res) => {
+    try {
+        const { name } = req.params;
+        const classifications = { 'futebol': { type: 'Sports', wastePerPerson: 0.5, avgAttendees: 20000 }, 'show': { type: 'Music', wastePerPerson: 0.5, avgAttendees: 8000 }, 'teatro': { type: 'Arts & Theatre', wastePerPerson: 0.3, avgAttendees: 1500 }, 'feira': { type: 'Festival', wastePerPerson: 0.4, avgAttendees: 5000 } };
+        const result = classifications[name.toLowerCase()] || { type: 'Music', wastePerPerson: 0.5, avgAttendees: 5000 };
+        res.json(result);
+    } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/events/external/import/:eventId', authenticateToken, async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const eventData = req.body;
+        console.log('📌 Importando evento:', eventId);
+        const existingEvent = await Event.findOne({ externalId: eventId, userId: req.userId });
+        if (existingEvent) return res.status(400).json({ error: 'Este evento já foi importado anteriormente' });
+        let latitude = null, longitude = null, address = eventData.address || '', city = eventData.city || 'Cotia', state = eventData.state || 'SP', zipCode = eventData.zipCode || '';
+        if (zipCode) {
+            const geoResult = await getCoordinatesByZipCode(zipCode);
+            if (geoResult.success && geoResult.latitude && geoResult.longitude) {
+                latitude = geoResult.latitude; longitude = geoResult.longitude;
+                address = geoResult.address || address; city = geoResult.city || city; state = geoResult.state || state;
+                console.log(`📍 Coordenadas via CEP: ${latitude}, ${longitude}`);
+            }
+        }
+        if (!latitude || !longitude) {
+            const searchAddress = `${address}, ${city}, ${state}, Brasil`;
+            try {
+                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', { params: { q: searchAddress, format: 'json', limit: 1, countrycodes: 'br' }, headers: { 'User-Agent': 'EcoRoute/1.0' }, timeout: 8000 });
+                if (nominatimResponse.data && nominatimResponse.data.length > 0) {
+                    latitude = parseFloat(nominatimResponse.data[0].lat); longitude = parseFloat(nominatimResponse.data[0].lon);
+                    console.log(`📍 Coordenadas via Nominatim: ${latitude}, ${longitude}`);
+                }
+            } catch (error) { console.log(`⚠️ Erro Nominatim: ${error.message}`); }
+        }
+        if (!latitude || !longitude) { latitude = -23.6022; longitude = -46.9194; console.log(`⚠️ Usando coordenadas padrão`); }
+        const event = new Event({
+            name: eventData.name, description: eventData.description || `Evento importado: ${eventData.name}`,
+            type: eventData.classification === 'Sports' ? 'evento_esportivo' : 'show',
+            address: address, city: city, state: state, zipCode: zipCode,
+            startDate: new Date(eventData.startDate), endDate: new Date(eventData.endDate || eventData.startDate),
+            expectedAttendees: eventData.expectedAttendees || 5000, estimatedWaste: eventData.estimatedWaste || 2500,
+            status: 'planejado', venueName: eventData.venueName, imageUrl: eventData.imageUrl, eventUrl: eventData.eventUrl,
+            externalId: eventId, source: 'ticketmaster', userId: req.userId
+        });
+        if (latitude && longitude) event.setCoordinates(latitude, longitude);
+        await event.save();
+        console.log(`✅ Evento criado: ${event.name}`);
+        const point = new CollectionPoint({
+            name: `${event.name} - Evento`, address: address, city: city, state: state, zipCode: zipCode,
+            capacity: event.estimatedWaste * 2, currentVolume: 0, wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
+            userId: req.userId, status: 'ACTIVE', location: event.location || { type: 'Point', coordinates: [longitude, latitude] }
+        });
+        await point.save();
+        console.log(`✅ Ponto criado: ${point.name}`);
+        const collection = new Collection({
+            collectionPointId: point._id, wasteVolume: event.estimatedWaste, wasteType: 'outros',
+            notes: `Coleta inicial do evento: ${event.name}`, userId: req.userId, date: new Date()
+        });
+        await collection.save();
+        console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
+        const routeDate = getNextCollectionDate();
+        const route = new Route({
+            name: `${event.name} - Rota de Coleta`, description: `Rota para coleta de resíduos do evento ${event.name}.`,
+            date: routeDate, points: [{ pointId: point._id, order: 1, estimatedVolume: event.estimatedWaste, actualVolume: 0, collectedAt: null }],
+            totalDistance: 0, totalWaste: event.estimatedWaste, fuelConsumption: 0, carbonFootprint: event.estimatedWaste * 0.13,
+            status: 'PLANNED', source: 'events', userId: req.userId,
+            eventInfo: { eventId: event._id, eventName: event.name, eventDate: event.startDate, eventLocation: address }
+        });
+        await route.save();
+        console.log(`✅ Rota criada: ${route.name}`);
+        event.routeId = route._id; event.scheduledCollectionDate = routeDate; await event.save();
+        io.emit('event-imported', { eventId: event._id, eventName: event.name, routeId: route._id, routeName: route.name });
+        res.status(201).json({
+            success: true, message: `Evento "${event.name}" importado com sucesso!`,
+            event: { id: event._id, name: event.name, date: event.startDate, estimatedWaste: event.estimatedWaste, address: event.address, city: event.city, coordinates: { latitude, longitude } },
+            point: { id: point._id, name: point.name, address: point.address },
+            route: { id: route._id, name: route.name, date: route.date, totalWaste: route.totalWaste }
+        });
+    } catch (error) { console.error('❌ Erro ao importar evento:', error); res.status(500).json({ error: error.message }); }
+});
+
+// ========== ROTAS DE EVENTOS ==========
+
+// GET /api/events - Listar todos os eventos do usuário
+app.get('/api/events', authenticateToken, async (req, res) => {
+    try {
+        const events = await Event.find({ userId: req.userId }).sort({ startDate: -1 });
+        console.log(`📊 Eventos encontrados: ${events.length}`);
+        res.json(events);
+    } catch (error) {
+        console.error('❌ Erro ao listar eventos:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// GET /api/impact/evolution - Evolução do impacto
-app.get('/api/impact/evolution', authenticateToken, async (req, res) => {
+// GET /api/events/:id - Buscar evento específico
+app.get('/api/events/:id', authenticateToken, async (req, res) => {
     try {
-        const { pointId, date } = req.query;
-
-        // Construir filtro base
-        let filter = { userId: req.user._id };
-
-        // Definir período
-        let endDate = new Date();
-        if (date) {
-            endDate = new Date(date);
-            endDate.setHours(23, 59, 59, 999);
-        }
-
-        const startDate = new Date(endDate);
-        startDate.setMonth(startDate.getMonth() - 11);
-        startDate.setHours(0, 0, 0, 0);
-
-        filter.date = { $gte: startDate, $lte: endDate };
-
-        if (pointId) {
-            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
-        }
-
-        // Agrupar por mês
-        const evolution = await Collection.aggregate([
-            { $match: filter },
-            {
-                $group: {
-                    _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
-                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
-                }
-            },
-            { $sort: { _id: 1 } },
-            { $limit: 12 }
-        ]);
-
-        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-        const labels = evolution.map(item => {
-            const monthNum = parseInt(item._id.split('-')[1]) - 1;
-            return monthNames[monthNum] || item._id;
-        });
-        const actual = evolution.map(item => Math.round(item.carbon));
-        const goal = actual.map(value => Math.round(value * 1.2));
-
-        console.log('📊 Evolução encontrada:', labels, actual);
-
-        res.json({ labels, actual, goal });
+        const event = await Event.findOne({ _id: req.params.id, userId: req.userId });
+        if (!event) return res.status(404).json({ error: 'Evento não encontrado' });
+        res.json(event);
     } catch (error) {
-        console.error('❌ Erro ao carregar evolução de impacto:', error);
-        res.json({ labels: [], actual: [], goal: [] });
+        console.error('❌ Erro ao buscar evento:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// GET /api/impact/waste-distribution - Distribuição de resíduos
-app.get('/api/impact/waste-distribution', authenticateToken, async (req, res) => {
+// POST /api/events - Criar evento manualmente
+app.post('/api/events', authenticateToken, async (req, res) => {
     try {
-        const { pointId, date } = req.query;
+        const eventData = { ...req.body, userId: req.userId };
 
-        // Construir filtro base
-        let filter = { userId: req.user._id };
-
-        // Adicionar filtro de data
-        if (date) {
-            const [year, month, day] = date.split('-');
-            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
-            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
-            filter.date = { $gte: startDate, $lte: endDate };
+        // Calcular resíduos estimados se não informado
+        if (!eventData.estimatedWaste && eventData.expectedAttendees) {
+            eventData.estimatedWaste = eventData.expectedAttendees * 0.5;
         }
 
-        // Adicionar filtro de ponto
-        if (pointId) {
-            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
-        }
-
-        // Agrupar por tipo de resíduo
-        const distribution = await Collection.aggregate([
-            { $match: filter },
-            { $group: { _id: '$wasteType', total: { $sum: '$wasteVolume' } } },
-            { $sort: { total: -1 } }
-        ]);
-
-        const typeLabels = {
-            'plastico': 'Plástico',
-            'papel': 'Papel',
-            'vidro': 'Vidro',
-            'metal': 'Metal',
-            'organico': 'Orgânico',
-            'eletronico': 'Eletrônico',
-            'outros': 'Outros'
-        };
-
-        const labels = distribution.map(d => typeLabels[d._id] || d._id);
-        const data = distribution.map(d => d.total);
-
-        console.log('📊 Distribuição encontrada:', labels, data);
-
-        res.json({ labels, data });
+        const event = new Event(eventData);
+        await event.save();
+        res.status(201).json(event);
     } catch (error) {
-        console.error('❌ Erro ao carregar distribuição de resíduos:', error);
-        res.json({ labels: [], data: [] });
+        console.error('❌ Erro ao criar evento:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// GET /api/impact/benefits - Benefícios detalhados
-app.get('/api/impact/benefits', authenticateToken, async (req, res) => {
+// POST /api/events/:id/finish - Finalizar evento (COM REGISTRO DE COLETA)
+app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
     try {
-        const { pointId, date } = req.query;
+        const event = await Event.findOne({ _id: req.params.id, userId: req.userId });
+        if (!event) return res.status(404).json({ error: 'Evento não encontrado' });
 
-        // Construir filtro base
-        let filter = { userId: req.user._id };
+        // ========== INICIALIZAR VARIÁVEIS ==========
+        let latitude = null;
+        let longitude = null;
 
-        if (date) {
-            const [year, month, day] = date.split('-');
-            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
-            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
-            filter.date = { $gte: startDate, $lte: endDate };
+        // Verificar se o evento já tem coordenadas
+        if (event.latitude && event.longitude) {
+            latitude = event.latitude;
+            longitude = event.longitude;
+            console.log(`📍 Evento já possui coordenadas: ${latitude}, ${longitude}`);
         }
 
-        if (pointId) {
-            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
-        }
-
-        const collections = await Collection.find(filter);
-        const totalWaste = collections.reduce((sum, c) => sum + (c.wasteVolume || 0), 0);
-
-        const treesSaved = Math.floor(totalWaste * 0.02);
-        const waterSaved = totalWaste * 5;
-        const energySaved = totalWaste * 0.35;
-        const carbonSaved = totalWaste * 0.13;
-
-        const benefits = [
-            {
-                id: 'forests',
-                icon: 'tree',
-                title: 'Florestas Preservadas',
-                description: `Com ${treesSaved.toLocaleString()} árvores preservadas, equivalentes a ${Math.floor(treesSaved / 100)} hectares de floresta.`,
-                stats: [
-                    { label: 'O₂ Gerado', value: `${(treesSaved * 118).toLocaleString()} kg/ano` },
-                    { label: 'Habitat Preservado', value: `${Math.floor(treesSaved * 0.5)} espécies` }
-                ]
-            },
-            {
-                id: 'water',
-                icon: 'water',
-                title: 'Recursos Hídricos',
-                description: `Economia de ${Math.floor(waterSaved).toLocaleString()} litros de água, suficiente para abastecer ${Math.floor(waterSaved / 150)} famílias por mês.`,
-                stats: [
-                    { label: 'Piscinas Olímpicas', value: `${Math.floor(waterSaved / 2500000)} unidades` },
-                    { label: 'Dias de consumo', value: `${Math.floor(waterSaved / 150)} dias` }
-                ]
-            },
-            {
-                id: 'energy',
-                icon: 'bolt',
-                title: 'Energia Renovável',
-                description: `${Math.floor(energySaved).toLocaleString()} kWh economizados, equivalente a ${Math.floor(energySaved / 150)} meses de consumo residencial.`,
-                stats: [
-                    { label: 'Casas abastecidas', value: `${Math.floor(energySaved / 150)} meses` },
-                    { label: 'Carvão evitado', value: `${Math.floor(energySaved * 0.5)} kg` }
-                ]
-            },
-            {
-                id: 'air',
-                icon: 'leaf',
-                title: 'Qualidade do Ar',
-                description: `${Math.floor(carbonSaved).toLocaleString()} kg de CO₂ deixaram de ser emitidos, equivalente a ${Math.floor(carbonSaved / 20)} carros populares.`,
-                stats: [
-                    { label: 'Árvores necessárias', value: `${Math.floor(carbonSaved / 22)} unidades` },
-                    { label: 'Voos SP-Rio', value: `${Math.floor(carbonSaved / 100)} viagens` }
-                ]
+        // Se não tiver, tentar buscar pelo CEP
+        if ((!latitude || !longitude) && event.zipCode) {
+            const geoResult = await getCoordinatesByZipCode(event.zipCode);
+            if (geoResult.success && geoResult.latitude && geoResult.longitude) {
+                latitude = geoResult.latitude;
+                longitude = geoResult.longitude;
+                console.log(`📍 Coordenadas obtidas via CEP: ${latitude}, ${longitude}`);
             }
-        ];
+        }
 
-        res.json({ benefits });
+        // Se ainda não tiver, tentar buscar pelo endereço
+        if ((!latitude || !longitude) && event.address && event.city) {
+            const searchAddress = `${event.address}, ${event.city}, ${event.state}, Brasil`;
+            console.log(`🔍 Buscando coordenadas para: ${searchAddress}`);
+            try {
+                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
+                    params: { q: searchAddress, format: 'json', limit: 1, countrycodes: 'br' },
+                    headers: { 'User-Agent': 'EcoRoute/1.0' },
+                    timeout: 8000
+                });
+                if (nominatimResponse.data && nominatimResponse.data.length > 0) {
+                    latitude = parseFloat(nominatimResponse.data[0].lat);
+                    longitude = parseFloat(nominatimResponse.data[0].lon);
+                    console.log(`📍 Coordenadas obtidas via Nominatim: ${latitude}, ${longitude}`);
+                }
+            } catch (error) {
+                console.log(`⚠️ Erro Nominatim: ${error.message}`);
+            }
+        }
+
+        // ========== DETERMINAR TIPOS DE RESÍDUOS BASEADO NO TIPO DO EVENTO ==========
+        let wasteTypes = ['plastico', 'papel', 'organico'];
+
+        switch (event.type) {
+            case 'show':
+            case 'festa':
+                wasteTypes = ['plastico', 'papel', 'vidro', 'organico'];
+                break;
+            case 'feira':
+                wasteTypes = ['papel', 'plastico', 'organico'];
+                break;
+            case 'evento_esportivo':
+                wasteTypes = ['plastico', 'papel', 'vidro'];
+                break;
+            default:
+                wasteTypes = ['plastico', 'papel', 'vidro', 'metal', 'organico'];
+        }
+
+        // ========== CRIAR/ATUALIZAR PONTO DE COLETA ==========
+        let point = await CollectionPoint.findOne({
+            name: `${event.name} - Evento`,
+            userId: req.userId
+        });
+
+        if (!point && latitude && longitude) {
+            point = new CollectionPoint({
+                name: `${event.name} - Evento`,
+                address: event.address || '',
+                neighborhood: event.neighborhood || '',
+                city: event.city || '',
+                state: event.state || '',
+                zipCode: event.zipCode || '',
+                capacity: (event.estimatedWaste || 5000) * 2,
+                currentVolume: event.estimatedWaste || 5000,
+                wasteTypes: wasteTypes,
+                userId: req.userId,
+                status: 'ACTIVE',
+                location: {
+                    type: 'Point',
+                    coordinates: [Number(longitude), Number(latitude)]
+                }
+            });
+            await point.save();
+            console.log(`✅ Ponto de coleta criado: ${point.name}`);
+        } else if (point) {
+            point.currentVolume = (point.currentVolume || 0) + (event.estimatedWaste || 0);
+            await point.save();
+            console.log(`✅ Ponto atualizado: ${point.name} - Volume: ${point.currentVolume} kg`);
+        }
+
+        // ========== REGISTRAR COLETA ==========
+        if (point && event.estimatedWaste > 0) {
+            const primaryWasteType = wasteTypes[0] || 'outros';
+
+            const collection = new Collection({
+                collectionPointId: point._id,
+                wasteVolume: event.estimatedWaste,
+                wasteType: primaryWasteType,
+                notes: `Coleta do evento: ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg. Tipos: ${wasteTypes.join(', ')}`,
+                userId: req.userId,
+                date: new Date()
+            });
+            await collection.save();
+            console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg de ${primaryWasteType}`);
+        }
+
+        // ========== ATUALIZAR EVENTO ==========
+        if (latitude && longitude) {
+            event.latitude = latitude;
+            event.longitude = longitude;
+            event.location = {
+                type: 'Point',
+                coordinates: [Number(longitude), Number(latitude)]
+            };
+        }
+
+        event.status = 'coleta_agendada';
+        await event.save();
+
+        // ========== CRIAR ROTA DE COLETA ==========
+        const nextCollectionDate = getNextCollectionDate();
+
+        let route = null;
+        if (point) {
+            route = new Route({
+                name: `${event.name} - Coleta Pós-Evento`,
+                description: `Coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg. Tipos: ${wasteTypes.join(', ')}`,
+                date: nextCollectionDate,
+                points: [{
+                    pointId: point._id,
+                    order: 1,
+                    estimatedVolume: event.estimatedWaste || 5000,
+                    actualVolume: event.estimatedWaste || 5000,
+                    collectedAt: new Date()
+                }],
+                totalDistance: 0,
+                totalWaste: event.estimatedWaste || 5000,
+                fuelConsumption: 0,
+                carbonFootprint: (event.estimatedWaste || 5000) * 0.13,
+                status: 'PLANNED',
+                source: 'events',
+                userId: req.userId,
+                eventInfo: {
+                    eventId: event._id,
+                    eventName: event.name,
+                    eventDate: event.startDate,
+                    eventLocation: event.address
+                }
+            });
+            await route.save();
+            console.log(`✅ Rota criada: ${route.name}`);
+
+            event.routeId = route._id;
+            event.scheduledCollectionDate = nextCollectionDate;
+            await event.save();
+        }
+
+        res.json({
+            success: true,
+            message: point ? `Evento finalizado! ${event.estimatedWaste} kg de resíduos registrados.` : 'Evento finalizado, mas não foi possível criar ponto de coleta (sem coordenadas).',
+            point: point ? {
+                id: point._id,
+                name: point.name,
+                wasteTypes: point.wasteTypes,
+                currentVolume: point.currentVolume
+            } : null,
+            collection: point ? { wasteVolume: event.estimatedWaste, wasteType: wasteTypes[0] } : null,
+            route: route ? {
+                id: route._id,
+                name: route.name,
+                date: route.date,
+                totalWaste: route.totalWaste
+            } : null
+        });
+
     } catch (error) {
-        console.error('❌ Erro ao carregar benefícios:', error);
-        res.json({ benefits: [] });
+        console.error('❌ Erro ao finalizar evento:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// ========== ROTAS DE EVENTOS EXTERNOS ==========
-app.get('/api/events/external/search', authenticateToken, async (req, res) => {
-    res.json({
-        success: true,
-        events: [
-            { id: '1', name: 'Rock in Rio 2026', city: 'Rio de Janeiro', state: 'RJ', startDate: new Date().toISOString(), classification: 'music', expectedAttendees: 100000 },
-            { id: '2', name: 'Lollapalooza', city: 'São Paulo', state: 'SP', startDate: new Date().toISOString(), classification: 'music', expectedAttendees: 80000 }
-        ],
-        total: 2
-    });
-});
-
-app.get('/api/events/external/classification/:name', authenticateToken, async (req, res) => {
-    res.json({ success: true, events: [], total: 0 });
-});
-
-app.post('/api/events/external/import/:eventId', authenticateToken, async (req, res) => {
-    res.json({ success: true, message: 'Evento importado com sucesso (modo de teste)' });
+// DELETE /api/events/:id - Deletar evento
+app.delete('/api/events/:id', authenticateToken, async (req, res) => {
+    try {
+        const event = await Event.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+        if (!event) return res.status(404).json({ error: 'Evento não encontrado' });
+        res.json({ message: 'Evento deletado com sucesso' });
+    } catch (error) {
+        console.error('❌ Erro ao deletar evento:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ========== ROTAS DE MENSAGENS ==========
 app.post('/api/messages', authenticateToken, async (req, res) => {
-    try {
-        const { content, room, recipient } = req.body;
-        const message = new Message({
-            content,
-            room: room || 'geral',
-            sender: req.userId,
-            senderName: req.user.name,
-            recipient
-        });
-        await message.save();
-        io.emit('new-message', { ...message.toJSON(), timestamp: new Date() });
-        res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao enviar mensagem' });
-    }
+    try { const { content, room, recipient } = req.body; const message = new Message({ content, room: room || 'geral', sender: req.userId, senderName: req.user.name, recipient }); await message.save(); io.emit('new-message', { ...message.toJSON(), timestamp: new Date() }); res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao enviar mensagem' }); }
 });
 
 app.get('/api/messages/:room', authenticateToken, async (req, res) => {
-    try {
-        const { room } = req.params;
-        const { limit = 50 } = req.query;
-        const messages = await Message.find({ room }).sort({ createdAt: -1 }).limit(parseInt(limit));
-        res.json(messages.reverse());
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao buscar mensagens' });
-    }
+    try { const { room } = req.params; const { limit = 50 } = req.query; const messages = await Message.find({ room }).sort({ createdAt: -1 }).limit(parseInt(limit)); res.json(messages.reverse()); }
+    catch (error) { res.status(500).json({ error: 'Erro ao buscar mensagens' }); }
 });
 
 // ========== ROTAS DE NOTIFICAÇÕES ==========
 app.get('/api/notifications', authenticateToken, async (req, res) => {
-    try {
-        const notifications = await Notification.find({ user: req.userId }).sort({ createdAt: -1 }).limit(50);
-        const unreadCount = await Notification.countDocuments({ user: req.userId, read: false });
-        res.json({ notifications, unreadCount });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao buscar notificações' });
-    }
+    try { const notifications = await Notification.find({ user: req.userId }).sort({ createdAt: -1 }).limit(50); const unreadCount = await Notification.countDocuments({ user: req.userId, read: false }); res.json({ notifications, unreadCount }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao buscar notificações' }); }
 });
 
 app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
-    try {
-        await Notification.findByIdAndUpdate(req.params.id, { read: true, readAt: new Date() });
-        res.json({ message: 'Notificação marcada como lida' });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao marcar notificação' });
-    }
+    try { await Notification.findByIdAndUpdate(req.params.id, { read: true, readAt: new Date() }); res.json({ message: 'Notificação marcada como lida' }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao marcar notificação' }); }
 });
 
 app.patch('/api/notifications/read-all', authenticateToken, async (req, res) => {
-    try {
-        await Notification.updateMany({ user: req.userId, read: false }, { read: true, readAt: new Date() });
-        res.json({ message: 'Todas notificações marcadas como lidas' });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao marcar notificações' });
-    }
+    try { await Notification.updateMany({ user: req.userId, read: false }, { read: true, readAt: new Date() }); res.json({ message: 'Todas notificações marcadas como lidas' }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao marcar notificações' }); }
 });
 
 app.delete('/api/notifications/:id', authenticateToken, async (req, res) => {
-    try {
-        await Notification.findOneAndDelete({ _id: req.params.id, user: req.userId });
-        res.json({ message: 'Notificação removida' });
-    } catch (error) {
-        res.status(500).json({ error: 'Erro ao remover notificação' });
-    }
+    try { await Notification.findOneAndDelete({ _id: req.params.id, user: req.userId }); res.json({ message: 'Notificação removida' }); }
+    catch (error) { res.status(500).json({ error: 'Erro ao remover notificação' }); }
 });
 
 // ========== ROTAS PÚBLICAS ==========
-app.get('/', (req, res) => {
-    res.json({ nome: 'EcoRoute API', versao: '2.0.0', status: 'online' });
-});
-
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'OK', database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado' });
-});
+app.get('/', (req, res) => { res.json({ nome: 'EcoRoute API', versao: '2.0.0', status: 'online' }); });
+app.get('/api/health', (req, res) => { res.json({ status: 'OK', database: mongoose.connection.readyState === 1 ? 'conectado' : 'desconectado' }); });
 
 // ========== TRATAMENTO DE ERROS ==========
-app.use('*', (req, res) => {
-    res.status(404).json({ error: 'Rota não encontrada', path: req.originalUrl });
-});
-
-app.use((err, req, res, next) => {
-    console.error('❌ Erro global:', err.message);
-    res.status(500).json({ error: 'Erro interno do servidor' });
-});
+app.use('*', (req, res) => { res.status(404).json({ error: 'Rota não encontrada', path: req.originalUrl }); });
+app.use((err, req, res, next) => { console.error('❌ Erro global:', err.message); res.status(500).json({ error: 'Erro interno do servidor' }); });
 
 // ========== INICIAR SERVIDOR ==========
 server.listen(PORT, () => {
