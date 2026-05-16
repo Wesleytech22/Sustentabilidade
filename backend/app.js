@@ -619,20 +619,8 @@ app.post('/api/points', authenticateToken, async (req, res) => {
             if (geoResult.success && geoResult.latitude && geoResult.longitude) {
                 latitude = geoResult.latitude;
                 longitude = geoResult.longitude;
-                console.log(`📍 Coordenadas obtidas: ${latitude}, ${longitude} (fonte: ${geoResult.source})`);
-            } else {
-                console.log(`⚠️ Coordenadas não disponíveis para o CEP ${zipCode}`);
-                // Se o frontend enviou latitude/longitude, usar essas
-                if (req.body.latitude && req.body.longitude) {
-                    latitude = req.body.latitude;
-                    longitude = req.body.longitude;
-                    console.log(`📍 Usando coordenadas fornecidas pelo frontend: ${latitude}, ${longitude}`);
-                }
+                console.log(`📍 Coordenadas obtidas: ${latitude}, ${longitude}`);
             }
-        } else if (req.body.latitude && req.body.longitude) {
-            latitude = req.body.latitude;
-            longitude = req.body.longitude;
-            console.log(`📍 Usando coordenadas fornecidas pelo frontend: ${latitude}, ${longitude}`);
         }
 
         const pointData = {
@@ -642,7 +630,7 @@ app.post('/api/points', authenticateToken, async (req, res) => {
             state: state ? state.toUpperCase() : '',
             zipCode: zipCode || '',
             capacity: Number(capacity),
-            currentVolume: currentVolume || 0,
+            currentVolume: currentVolume ? Number(currentVolume) : 0,
             wasteTypes: wasteTypes || [],
             userId: req.userId,
             status: 'ACTIVE'
@@ -660,45 +648,96 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 
         console.log(`✅ Ponto criado: ${point.name}`);
 
+        // Registrar coleta automaticamente se houver volume inicial
+        if (currentVolume && currentVolume > 0) {
+            const wasteType = (wasteTypes && wasteTypes.length > 0) ? wasteTypes[0] : 'outros';
+
+            const collection = new Collection({
+                collectionPointId: point._id,
+                wasteVolume: Number(currentVolume),
+                wasteType: wasteType,
+                notes: `Coleta inicial ao cadastrar ponto: ${point.name}`,
+                userId: req.userId,
+                date: new Date()
+            });
+            await collection.save();
+            console.log(`✅ Coleta inicial registrada: ${currentVolume} kg de ${wasteType}`);
+        }
+
         // Buscar todos os pontos do usuário com coordenadas
         const allPoints = await CollectionPoint.find({
             userId: req.userId,
             location: { $exists: true, $ne: null }
         });
 
-        let createdRoute = null;
+        let updatedRoute = null;
 
-        // Gerar rota automaticamente se tiver pelo menos 2 pontos
+        // Buscar rota existente do usuário (apenas uma rota ativa)
+        let existingRoute = await Route.findOne({
+            userId: req.userId,
+            source: 'points',
+            status: 'PLANNED'
+        });
+
         if (allPoints.length >= 2) {
             const optimized = await calculateOptimizedRoute(allPoints);
             const nextCollectionDate = getNextCollectionDate();
 
-            const mainPointName = allPoints[0]?.name || 'Ponto Principal';
-            const routeName = `${mainPointName} + ${allPoints.length - 1} ${allPoints.length - 1 === 1 ? 'ponto' : 'pontos'}`;
+            // Usar o nome do primeiro ponto como base
+            const mainPointName = allPoints[0]?.name || 'Pontos de Coleta';
+            const routeName = `${mainPointName}`;
 
-            const route = new Route({
-                name: routeName,
-                description: `Rota otimizada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
-                date: nextCollectionDate,
-                points: optimized.orderedPoints.map((p, idx) => ({
+            if (existingRoute) {
+                // Atualizar rota existente
+                existingRoute.name = routeName;
+                existingRoute.description = `Rota otimizada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`;
+                existingRoute.date = nextCollectionDate;
+                existingRoute.points = optimized.orderedPoints.map((p, idx) => ({
                     pointId: p._id,
                     order: idx + 1,
                     estimatedVolume: p.currentVolume || 500,
                     actualVolume: 0,
                     collectedAt: null
-                })),
-                totalDistance: optimized.totalDistance,
-                totalWaste: optimized.totalWaste,
-                fuelConsumption: optimized.totalDistance * 0.35,
-                carbonFootprint: optimized.totalWaste * 0.13,
-                status: 'PLANNED',
-                source: 'points',
-                userId: req.userId
-            });
+                }));
+                existingRoute.totalDistance = optimized.totalDistance;
+                existingRoute.totalWaste = optimized.totalWaste;
+                existingRoute.fuelConsumption = optimized.totalDistance * 0.35;
+                existingRoute.carbonFootprint = optimized.totalWaste * 0.13;
 
-            await route.save();
-            createdRoute = route;
-            console.log(`✅ Rota automática criada: ${routeName}`);
+                await existingRoute.save();
+                updatedRoute = existingRoute;
+                console.log(`✅ Rota atualizada: ${routeName} com ${allPoints.length} pontos`);
+            } else {
+                // Criar nova rota
+                const newRoute = new Route({
+                    name: routeName,
+                    description: `Rota otimizada com ${allPoints.length} pontos de coleta. Tempo estimado: ${allPoints.length} hora(s).`,
+                    date: nextCollectionDate,
+                    points: optimized.orderedPoints.map((p, idx) => ({
+                        pointId: p._id,
+                        order: idx + 1,
+                        estimatedVolume: p.currentVolume || 500,
+                        actualVolume: 0,
+                        collectedAt: null
+                    })),
+                    totalDistance: optimized.totalDistance,
+                    totalWaste: optimized.totalWaste,
+                    fuelConsumption: optimized.totalDistance * 0.35,
+                    carbonFootprint: optimized.totalWaste * 0.13,
+                    status: 'PLANNED',
+                    source: 'points',
+                    userId: req.userId
+                });
+
+                await newRoute.save();
+                updatedRoute = newRoute;
+                console.log(`✅ Rota criada: ${routeName} com ${allPoints.length} pontos`);
+            }
+        } else if (existingRoute && allPoints.length < 2) {
+            // Se não tem pontos suficientes, deletar a rota existente
+            await Route.deleteOne({ _id: existingRoute._id });
+            console.log(`🗑️ Rota removida: ${existingRoute.name} (menos de 2 pontos com coordenadas)`);
+            updatedRoute = null;
         }
 
         const responsePoint = point.toObject();
@@ -707,10 +746,32 @@ app.post('/api/points', authenticateToken, async (req, res) => {
             responsePoint.longitude = point.location.coordinates[0];
         }
 
+        // Remover rotas duplicadas antigas (manter apenas a mais recente)
+        const allRoutes = await Route.find({
+            userId: req.userId,
+            source: 'points',
+            status: 'PLANNED'
+        }).sort({ createdAt: -1 });
+
+        if (allRoutes.length > 1) {
+            const [keepRoute, ...duplicates] = allRoutes;
+            for (const dup of duplicates) {
+                await Route.deleteOne({ _id: dup._id });
+                console.log(`🗑️ Rota duplicada antiga removida: ${dup.name}`);
+            }
+        }
+
         res.status(201).json({
             point: responsePoint,
-            route: createdRoute ? { id: createdRoute._id, name: createdRoute.name, date: createdRoute.date } : null,
-            message: createdRoute ? 'Ponto criado e rota gerada automaticamente!' : 'Ponto criado com sucesso!'
+            route: updatedRoute ? {
+                id: updatedRoute._id,
+                name: updatedRoute.name,
+                date: updatedRoute.date,
+                points: updatedRoute.points.length
+            } : null,
+            message: updatedRoute
+                ? 'Ponto criado, coleta registrada e rota atualizada!'
+                : 'Ponto criado com sucesso!'
         });
 
     } catch (error) {
@@ -848,6 +909,60 @@ app.delete('/api/routes/:id', authenticateToken, async (req, res) => {
         res.json({ message: 'Rota removida com sucesso' });
     } catch (error) {
         res.status(500).json({ error: 'Erro ao deletar rota' });
+    }
+});
+
+// Endpoint para limpar rotas duplicadas (executar apenas uma vez)
+app.post('/api/routes/clean-duplicates', authenticateToken, async (req, res) => {
+    try {
+        // Buscar todas as rotas do usuário
+        const routes = await Route.find({ userId: req.userId, source: 'points' }).sort({ createdAt: -1 });
+
+        if (routes.length <= 1) {
+            return res.json({ message: 'Nenhuma rota duplicada encontrada' });
+        }
+
+        // Manter apenas a mais recente
+        const [keepRoute, ...duplicates] = routes;
+
+        // Deletar as duplicadas
+        for (const dup of duplicates) {
+            await Route.deleteOne({ _id: dup._id });
+            console.log(`🗑️ Rota duplicada removida: ${dup.name}`);
+        }
+
+        // Atualizar a rota mantida com todos os pontos atuais
+        const allPoints = await CollectionPoint.find({
+            userId: req.userId,
+            location: { $exists: true, $ne: null }
+        });
+
+        if (allPoints.length >= 2) {
+            const optimized = await calculateOptimizedRoute(allPoints);
+            const nextCollectionDate = getNextCollectionDate();
+
+            keepRoute.points = optimized.orderedPoints.map((p, idx) => ({
+                pointId: p._id,
+                order: idx + 1,
+                estimatedVolume: p.currentVolume || 500,
+                actualVolume: 0,
+                collectedAt: null
+            }));
+            keepRoute.totalDistance = optimized.totalDistance;
+            keepRoute.totalWaste = optimized.totalWaste;
+            keepRoute.date = nextCollectionDate;
+            await keepRoute.save();
+        }
+
+        res.json({
+            message: `${duplicates.length} rotas duplicadas removidas. Rota principal mantida.`,
+            keptRoute: keepRoute.name,
+            removedCount: duplicates.length
+        });
+
+    } catch (error) {
+        console.error('❌ Erro:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
