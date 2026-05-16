@@ -1424,14 +1424,44 @@ app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) 
 // GET /api/impact/summary - Resumo do impacto
 app.get('/api/impact/summary', authenticateToken, async (req, res) => {
     try {
-        const totalWasteResult = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
-        ]);
+        const { pointId, date } = req.query;
 
-        const totalWaste = totalWasteResult[0]?.totalWaste || 0;
+        console.log('🔍 IMPACT SUMMARY - userId:', req.user._id.toString());
+        console.log('  date:', date);
+
+        // Construir filtro base
+        let filter = { userId: req.user._id };
+
+        // CORREÇÃO: Filtrar por data considerando o timezone local
+        if (date) {
+            // Criar datas no timezone local (Brasil)
+            const [year, month, day] = date.split('-');
+            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+
+            filter.date = { $gte: startDate, $lte: endDate };
+            console.log('  Filtro data (UTC):', startDate, 'até', endDate);
+        }
+
+        if (pointId) {
+            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
+            console.log('  Filtro ponto:', pointId);
+        }
+
+        console.log('  Filter:', JSON.stringify(filter, null, 2));
+
+        // Buscar coletas
+        const collections = await Collection.find(filter);
+        console.log(`  Coletas encontradas: ${collections.length}`);
+
+        let totalWaste = 0;
+        collections.forEach(c => {
+            totalWaste += c.wasteVolume || 0;
+            console.log(`    - ${c.date}: ${c.wasteVolume} kg (${c.wasteType})`);
+        });
+
+        console.log(`  Total de resíduos: ${totalWaste} kg`);
+
         const treesSaved = Math.floor(totalWaste * 0.02);
         const waterSaved = totalWaste * 5;
         const energySaved = totalWaste * 0.35;
@@ -1456,41 +1486,50 @@ app.get('/api/impact/summary', authenticateToken, async (req, res) => {
 // GET /api/impact/evolution - Evolução do impacto
 app.get('/api/impact/evolution', authenticateToken, async (req, res) => {
     try {
-        const { period = 'month' } = req.query;
+        const { pointId, date } = req.query;
 
-        let groupFormat;
-        let limit;
+        // Construir filtro base
+        let filter = { userId: req.user._id };
 
-        switch (period) {
-            case 'week':
-                groupFormat = '%Y-%m-%d';
-                limit = 7;
-                break;
-            case 'month':
-                groupFormat = '%Y-%m-%d';
-                limit = 30;
-                break;
-            case 'year':
-                groupFormat = '%Y-%m';
-                limit = 12;
-                break;
-            default:
-                groupFormat = '%Y-%m';
-                limit = 12;
+        // Definir período
+        let endDate = new Date();
+        if (date) {
+            endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
         }
 
+        const startDate = new Date(endDate);
+        startDate.setMonth(startDate.getMonth() - 11);
+        startDate.setHours(0, 0, 0, 0);
+
+        filter.date = { $gte: startDate, $lte: endDate };
+
+        if (pointId) {
+            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
+        }
+
+        // Agrupar por mês
         const evolution = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: { $dateToString: { format: groupFormat, date: '$date' } }, carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } } } },
+            { $match: filter },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
+                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
+                }
+            },
             { $sort: { _id: 1 } },
-            { $limit: limit }
+            { $limit: 12 }
         ]);
 
-        const labels = evolution.map(item => item._id);
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        const labels = evolution.map(item => {
+            const monthNum = parseInt(item._id.split('-')[1]) - 1;
+            return monthNames[monthNum] || item._id;
+        });
         const actual = evolution.map(item => Math.round(item.carbon));
         const goal = actual.map(value => Math.round(value * 1.2));
+
+        console.log('📊 Evolução encontrada:', labels, actual);
 
         res.json({ labels, actual, goal });
     } catch (error) {
@@ -1502,11 +1541,28 @@ app.get('/api/impact/evolution', authenticateToken, async (req, res) => {
 // GET /api/impact/waste-distribution - Distribuição de resíduos
 app.get('/api/impact/waste-distribution', authenticateToken, async (req, res) => {
     try {
+        const { pointId, date } = req.query;
+
+        // Construir filtro base
+        let filter = { userId: req.user._id };
+
+        // Adicionar filtro de data
+        if (date) {
+            const [year, month, day] = date.split('-');
+            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+            filter.date = { $gte: startDate, $lte: endDate };
+        }
+
+        // Adicionar filtro de ponto
+        if (pointId) {
+            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
+        }
+
+        // Agrupar por tipo de resíduo
         const distribution = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: { $ifNull: ['$wasteType', 'outros'] }, total: { $sum: '$wasteVolume' } } },
+            { $match: filter },
+            { $group: { _id: '$wasteType', total: { $sum: '$wasteVolume' } } },
             { $sort: { total: -1 } }
         ]);
 
@@ -1520,10 +1576,12 @@ app.get('/api/impact/waste-distribution', authenticateToken, async (req, res) =>
             'outros': 'Outros'
         };
 
-        res.json({
-            labels: distribution.map(d => typeLabels[d._id] || d._id),
-            data: distribution.map(d => d.total)
-        });
+        const labels = distribution.map(d => typeLabels[d._id] || d._id);
+        const data = distribution.map(d => d.total);
+
+        console.log('📊 Distribuição encontrada:', labels, data);
+
+        res.json({ labels, data });
     } catch (error) {
         console.error('❌ Erro ao carregar distribuição de resíduos:', error);
         res.json({ labels: [], data: [] });
@@ -1533,14 +1591,25 @@ app.get('/api/impact/waste-distribution', authenticateToken, async (req, res) =>
 // GET /api/impact/benefits - Benefícios detalhados
 app.get('/api/impact/benefits', authenticateToken, async (req, res) => {
     try {
-        const totalWasteResult = await Collection.aggregate([
-            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
-            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
-            { $match: { 'point.userId': req.user._id } },
-            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
-        ]);
+        const { pointId, date } = req.query;
 
-        const totalWaste = totalWasteResult[0]?.totalWaste || 0;
+        // Construir filtro base
+        let filter = { userId: req.user._id };
+
+        if (date) {
+            const [year, month, day] = date.split('-');
+            const startDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+            const endDate = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+            filter.date = { $gte: startDate, $lte: endDate };
+        }
+
+        if (pointId) {
+            filter.collectionPointId = new mongoose.Types.ObjectId(pointId);
+        }
+
+        const collections = await Collection.find(filter);
+        const totalWaste = collections.reduce((sum, c) => sum + (c.wasteVolume || 0), 0);
+
         const treesSaved = Math.floor(totalWaste * 0.02);
         const waterSaved = totalWaste * 5;
         const energySaved = totalWaste * 0.35;
