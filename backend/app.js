@@ -1134,15 +1134,616 @@ app.get('/api/collections', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE DASHBOARD ==========
+
+// GET /api/dashboard/stats - Estatísticas gerais
 app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
     try {
         const pointsCount = await CollectionPoint.countDocuments({ userId: req.userId });
-        const routesCount = await Route.countDocuments({ userId: req.userId, status: { $in: ['PLANNED', 'IN_PROGRESS'] } });
-        const totalWaste = 0;
-        const totalCarbon = 0;
-        res.json({ pointsCount, routesCount, totalWaste, totalCarbon });
+
+        const routesCount = await Route.countDocuments({
+            userId: req.userId,
+            status: { $in: ['PLANNED', 'IN_PROGRESS'] }
+        });
+
+        // Calcular total de resíduos coletados
+        const collections = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            { $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } }
+        ]);
+
+        const totalWaste = collections[0]?.totalWaste || 0;
+        const totalCarbon = Math.floor(totalWaste * 0.13);
+
+        console.log(`📊 Dashboard stats: pontos=${pointsCount}, rotas=${routesCount}, resíduos=${totalWaste}kg, CO₂=${totalCarbon}kg`);
+
+        res.json({
+            pointsCount,
+            routesCount,
+            totalWaste,
+            totalCarbon
+        });
     } catch (error) {
+        console.error('❌ Erro ao carregar stats:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/dashboard/waste-by-type - Resíduos por tipo de material
+app.get('/api/dashboard/waste-by-type', authenticateToken, async (req, res) => {
+    try {
+        const wasteByType = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            {
+                $group: {
+                    _id: { $ifNull: ['$wasteType', 'outros'] },
+                    total: { $sum: '$wasteVolume' }
+                }
+            },
+            { $sort: { total: -1 } }
+        ]);
+
+        const typeLabels = {
+            'plastico': 'Plástico',
+            'papel': 'Papel',
+            'vidro': 'Vidro',
+            'metal': 'Metal',
+            'organico': 'Orgânico',
+            'eletronico': 'Eletrônico',
+            'outros': 'Outros'
+        };
+
+        const typeColors = {
+            'plastico': '#FF6384',
+            'papel': '#36A2EB',
+            'vidro': '#FFCE56',
+            'metal': '#4CAF50',
+            'organico': '#FF9F40',
+            'eletronico': '#9C27B0',
+            'outros': '#999999'
+        };
+
+        const labels = wasteByType.map(item => typeLabels[item._id] || item._id);
+        const data = wasteByType.map(item => item.total);
+
+        console.log(`📊 Resíduos por tipo:`, labels, data);
+
+        if (labels.length === 0) {
+            res.json({
+                labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'],
+                data: [0, 0, 0, 0, 0]
+            });
+        } else {
+            res.json({ labels, data, colors: wasteByType.map(item => typeColors[item._id] || '#999999') });
+        }
+    } catch (error) {
+        console.error('❌ Erro ao carregar resíduos por tipo:', error);
+        res.json({ labels: ['Plástico', 'Papel', 'Vidro', 'Metal', 'Orgânico'], data: [0, 0, 0, 0, 0] });
+    }
+});
+
+// GET /api/dashboard/monthly-impact - Impacto mensal
+app.get('/api/dashboard/monthly-impact', authenticateToken, async (req, res) => {
+    try {
+        const monthlyImpact = await Collection.aggregate([
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: { 'point.userId': req.user._id } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
+                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
+                }
+            },
+            { $sort: { _id: 1 } },
+            { $limit: 12 }
+        ]);
+
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+        let labels = [];
+        let data = [];
+
+        if (monthlyImpact.length > 0) {
+            labels = monthlyImpact.map(item => {
+                const month = parseInt(item._id.split('-')[1]) - 1;
+                return monthNames[month];
+            });
+            data = monthlyImpact.map(item => Math.round(item.carbon));
+        } else {
+            // Retornar últimos 6 meses com zeros
+            const currentDate = new Date();
+            for (let i = 5; i >= 0; i--) {
+                const monthIndex = (currentDate.getMonth() - i + 12) % 12;
+                labels.push(monthNames[monthIndex]);
+                data.push(0);
+            }
+        }
+
+        console.log(`📊 Impacto mensal:`, labels, data);
+
+        res.json({ labels, data });
+    } catch (error) {
+        console.error('❌ Erro ao carregar impacto mensal:', error);
+        const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        const currentDate = new Date();
+        const labels = [];
+        for (let i = 5; i >= 0; i--) {
+            const monthIndex = (currentDate.getMonth() - i + 12) % 12;
+            labels.push(monthNames[monthIndex]);
+        }
+        res.json({ labels, data: [0, 0, 0, 0, 0, 0] });
+    }
+});
+
+// GET /api/dashboard/recent-activities - Atividades recentes
+app.get('/api/dashboard/recent-activities', authenticateToken, async (req, res) => {
+    try {
+        const activities = [];
+
+        // Coletas recentes
+        const recentCollections = await Collection.find()
+            .populate('collectionPointId')
+            .sort({ createdAt: -1 })
+            .limit(5);
+
+        for (const collection of recentCollections) {
+            if (collection.collectionPointId && collection.collectionPointId.userId.toString() === req.userId) {
+                const wasteTypeLabel = {
+                    'plastico': 'Plástico', 'papel': 'Papel', 'vidro': 'Vidro',
+                    'metal': 'Metal', 'organico': 'Orgânico', 'eletronico': 'Eletrônico', 'outros': 'Outros'
+                }[collection.wasteType] || collection.wasteType;
+
+                activities.push({
+                    id: collection._id,
+                    type: 'collection',
+                    icon: 'fa-recycle',
+                    title: `${collection.wasteVolume} kg de ${wasteTypeLabel} coletados em ${collection.collectionPointId.name}`,
+                    date: collection.createdAt,
+                    timeAgo: getTimeAgo(collection.createdAt)
+                });
+            }
+        }
+
+        // Rotas recentes
+        const recentRoutes = await Route.find({ userId: req.userId })
+            .sort({ createdAt: -1 })
+            .limit(5);
+
+        for (const route of recentRoutes) {
+            const statusText = {
+                'PLANNED': 'planejada',
+                'IN_PROGRESS': 'iniciada',
+                'COMPLETED': 'concluída',
+                'CANCELLED': 'cancelada'
+            }[route.status] || 'criada';
+
+            activities.push({
+                id: route._id,
+                type: 'route',
+                icon: 'fa-route',
+                title: `Rota "${route.name}" ${statusText}`,
+                date: route.createdAt,
+                timeAgo: getTimeAgo(route.createdAt)
+            });
+        }
+
+        // Pontos recentes
+        const recentPoints = await CollectionPoint.find({ userId: req.userId })
+            .sort({ createdAt: -1 })
+            .limit(5);
+
+        for (const point of recentPoints) {
+            activities.push({
+                id: point._id,
+                type: 'point',
+                icon: 'fa-map-marker-alt',
+                title: `Ponto de coleta "${point.name}" criado`,
+                date: point.createdAt,
+                timeAgo: getTimeAgo(point.createdAt)
+            });
+        }
+
+        activities.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        res.json({ activities: activities.slice(0, 10) });
+    } catch (error) {
+        console.error('❌ Erro ao carregar atividades recentes:', error);
+        res.json({ activities: [] });
+    }
+});
+
+// ========== ROTAS DE IMPACTO AMBIENTAL ==========
+
+// GET /api/impact/summary - Resumo do impacto
+app.get('/api/impact/summary', authenticateToken, async (req, res) => {
+    try {
+        const { pointId, period = 'all' } = req.query;
+
+        let matchCondition = { 'point.userId': req.user._id };
+
+        // Filtro por ponto de coleta
+        if (pointId && pointId !== '') {
+            matchCondition = { 'point._id': new mongoose.Types.ObjectId(pointId) };
+        }
+
+        // Filtro por período
+        let dateFilter = {};
+        const now = new Date();
+
+        switch (period) {
+            case 'week':
+                const weekAgo = new Date(now);
+                weekAgo.setDate(now.getDate() - 7);
+                dateFilter = { $gte: weekAgo };
+                break;
+            case 'month':
+                const monthAgo = new Date(now);
+                monthAgo.setMonth(now.getMonth() - 1);
+                dateFilter = { $gte: monthAgo };
+                break;
+            case 'year':
+                const yearAgo = new Date(now);
+                yearAgo.setFullYear(now.getFullYear() - 1);
+                dateFilter = { $gte: yearAgo };
+                break;
+            default:
+                dateFilter = {};
+        }
+
+        const pipeline = [
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: matchCondition }
+        ];
+
+        // Adicionar filtro de data se aplicável
+        if (Object.keys(dateFilter).length > 0) {
+            pipeline.push({ $match: { date: dateFilter } });
+        }
+
+        pipeline.push({ $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } });
+
+        const totalWasteResult = await Collection.aggregate(pipeline);
+
+        const totalWaste = totalWasteResult[0]?.totalWaste || 0;
+
+        const treesSaved = Math.floor(totalWaste * 0.02);
+        const waterSaved = totalWaste * 5;
+        const energySaved = totalWaste * 0.35;
+        const carbonSaved = totalWaste * 0.13;
+        const recyclingRate = totalWaste > 0 ? Math.min(95, Math.floor((totalWaste / (totalWaste + 1000)) * 100)) : 0;
+        const co2Reduction = carbonSaved;
+        const fuelSaved = Math.floor(totalWaste * 0.15);
+        const wasteDiverted = totalWaste;
+
+        console.log(`📊 Impacto summary: período=${period}, totalWaste=${totalWaste}kg`);
+
+        res.json({
+            treesSaved,
+            waterSaved: Math.floor(waterSaved),
+            energySaved: Math.floor(energySaved),
+            carbonSaved: Math.floor(carbonSaved),
+            recyclingRate,
+            co2Reduction: Math.floor(co2Reduction),
+            fuelSaved,
+            wasteDiverted: Math.floor(wasteDiverted)
+        });
+    } catch (error) {
+        console.error('❌ Erro no impacto summary:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/impact/evolution - Evolução do impacto (com período)
+app.get('/api/impact/evolution', authenticateToken, async (req, res) => {
+    try {
+        const { period = 'month', pointId, startDate, endDate } = req.query;
+
+        let groupFormat;
+        let limit;
+        let dateFilter = {};
+
+        const now = new Date();
+
+        switch (period) {
+            case 'week':
+                groupFormat = '%Y-%m-%d';
+                limit = 7;
+                const weekAgo = new Date(now);
+                weekAgo.setDate(now.getDate() - 7);
+                dateFilter = { $gte: weekAgo };
+                break;
+            case 'month':
+                groupFormat = '%Y-%m-%d';
+                limit = 30;
+                const monthAgo = new Date(now);
+                monthAgo.setMonth(now.getMonth() - 1);
+                dateFilter = { $gte: monthAgo };
+                break;
+            case 'year':
+                groupFormat = '%Y-%m';
+                limit = 12;
+                const yearAgo = new Date(now);
+                yearAgo.setFullYear(now.getFullYear() - 1);
+                dateFilter = { $gte: yearAgo };
+                break;
+            default:
+                groupFormat = '%Y-%m';
+                limit = 12;
+        }
+
+        // Datas personalizadas
+        if (startDate && endDate) {
+            dateFilter = {
+                $gte: new Date(startDate),
+                $lte: new Date(endDate)
+            };
+            groupFormat = '%Y-%m-%d';
+            limit = 365;
+        }
+
+        let matchCondition = { 'point.userId': req.user._id };
+
+        if (pointId && pointId !== '') {
+            matchCondition = { 'point._id': mongoose.Types.ObjectId(pointId) };
+        }
+
+        const pipeline = [
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: matchCondition }
+        ];
+
+        if (Object.keys(dateFilter).length > 0) {
+            pipeline.push({ $match: { date: dateFilter } });
+        }
+
+        pipeline.push(
+            {
+                $group: {
+                    _id: { $dateToString: { format: groupFormat, date: '$date' } },
+                    carbon: { $sum: { $multiply: ['$wasteVolume', 0.13] } }
+                }
+            },
+            { $sort: { _id: 1 } },
+            { $limit: limit }
+        );
+
+        const evolution = await Collection.aggregate(pipeline);
+
+        // Preencher datas faltantes
+        const labels = [];
+        const actual = [];
+
+        if (period === 'month' && !startDate) {
+            // Últimos 30 dias
+            for (let i = limit - 1; i >= 0; i--) {
+                const date = new Date(now);
+                date.setDate(now.getDate() - i);
+                const dateStr = date.toISOString().split('T')[0];
+                labels.push(dateStr);
+                const found = evolution.find(e => e._id === dateStr);
+                actual.push(found ? Math.round(found.carbon) : 0);
+            }
+        } else if (period === 'year') {
+            // Últimos 12 meses
+            const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+            for (let i = 11; i >= 0; i--) {
+                const date = new Date(now);
+                date.setMonth(now.getMonth() - i);
+                const monthStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+                const monthLabel = monthNames[date.getMonth()];
+                labels.push(monthLabel);
+                const found = evolution.find(e => e._id === monthStr);
+                actual.push(found ? Math.round(found.carbon) : 0);
+            }
+        } else {
+            evolution.forEach(item => {
+                labels.push(item._id);
+                actual.push(Math.round(item.carbon));
+            });
+        }
+
+        const goal = actual.map(value => Math.round(value * 1.2));
+
+        console.log(`📊 Impacto evolution: período=${period}, pontos=${actual.length}`);
+
+        res.json({ labels, actual, goal });
+    } catch (error) {
+        console.error('❌ Erro no impacto evolution:', error);
+        res.json({ labels: [], actual: [], goal: [] });
+    }
+});
+
+// GET /api/impact/waste-distribution - Distribuição de resíduos
+app.get('/api/impact/waste-distribution', authenticateToken, async (req, res) => {
+    try {
+        const { pointId, period = 'all', startDate, endDate } = req.query;
+
+        let matchCondition = { 'point.userId': req.user._id };
+
+        if (pointId && pointId !== '') {
+            matchCondition = { 'point._id': new mongoose.Types.ObjectId(pointId) };
+        }
+
+        // Filtro de período
+        let dateFilter = {};
+        const now = new Date();
+
+        if (startDate && endDate) {
+            dateFilter = { $gte: new Date(startDate), $lte: new Date(endDate) };
+        } else {
+            switch (period) {
+                case 'week':
+                    const weekAgo = new Date(now);
+                    weekAgo.setDate(now.getDate() - 7);
+                    dateFilter = { $gte: weekAgo };
+                    break;
+                case 'month':
+                    const monthAgo = new Date(now);
+                    monthAgo.setMonth(now.getMonth() - 1);
+                    dateFilter = { $gte: monthAgo };
+                    break;
+                case 'year':
+                    const yearAgo = new Date(now);
+                    yearAgo.setFullYear(now.getFullYear() - 1);
+                    dateFilter = { $gte: yearAgo };
+                    break;
+                default:
+                    dateFilter = {};
+            }
+        }
+
+        const pipeline = [
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: matchCondition }
+        ];
+
+        if (Object.keys(dateFilter).length > 0) {
+            pipeline.push({ $match: { date: dateFilter } });
+        }
+
+        pipeline.push(
+            {
+                $group: {
+                    _id: { $ifNull: ['$wasteType', 'outros'] },
+                    total: { $sum: '$wasteVolume' }
+                }
+            },
+            { $sort: { total: -1 } }
+        );
+
+        const distribution = await Collection.aggregate(pipeline);
+
+        const typeLabels = {
+            'plastico': 'Plástico',
+            'papel': 'Papel',
+            'vidro': 'Vidro',
+            'metal': 'Metal',
+            'organico': 'Orgânico',
+            'eletronico': 'Eletrônico',
+            'outros': 'Outros'
+        };
+
+        const labels = distribution.map(d => typeLabels[d._id] || d._id);
+        const data = distribution.map(d => d.total);
+
+        console.log(`📊 Waste distribution: período=${period}, tipos=${labels.length}`);
+
+        res.json({ labels, data });
+    } catch (error) {
+        console.error('❌ Erro no waste-distribution:', error);
+        res.json({ labels: [], data: [] });
+    }
+});
+
+// GET /api/impact/benefits - Benefícios detalhados
+app.get('/api/impact/benefits', authenticateToken, async (req, res) => {
+    try {
+        const { pointId, period = 'all' } = req.query;
+
+        let matchCondition = { 'point.userId': req.user._id };
+
+        if (pointId && pointId !== '') {
+            matchCondition = { 'point._id': new mongoose.Types.ObjectId(pointId) };
+        }
+
+        // Filtro de período
+        let dateFilter = {};
+        const now = new Date();
+
+        switch (period) {
+            case 'week':
+                const weekAgo = new Date(now);
+                weekAgo.setDate(now.getDate() - 7);
+                dateFilter = { $gte: weekAgo };
+                break;
+            case 'month':
+                const monthAgo = new Date(now);
+                monthAgo.setMonth(now.getMonth() - 1);
+                dateFilter = { $gte: monthAgo };
+                break;
+            case 'year':
+                const yearAgo = new Date(now);
+                yearAgo.setFullYear(now.getFullYear() - 1);
+                dateFilter = { $gte: yearAgo };
+                break;
+            default:
+                dateFilter = {};
+        }
+
+        const pipeline = [
+            { $lookup: { from: 'collectionpoints', localField: 'collectionPointId', foreignField: '_id', as: 'point' } },
+            { $unwind: { path: '$point', preserveNullAndEmptyArrays: true } },
+            { $match: matchCondition }
+        ];
+
+        if (Object.keys(dateFilter).length > 0) {
+            pipeline.push({ $match: { date: dateFilter } });
+        }
+
+        pipeline.push({ $group: { _id: null, totalWaste: { $sum: '$wasteVolume' } } });
+
+        const totalWasteResult = await Collection.aggregate(pipeline);
+        const totalWaste = totalWasteResult[0]?.totalWaste || 0;
+
+        const treesSaved = Math.floor(totalWaste * 0.02);
+        const waterSaved = totalWaste * 5;
+        const energySaved = totalWaste * 0.35;
+        const carbonSaved = totalWaste * 0.13;
+
+        const benefits = [
+            {
+                id: 'forests',
+                icon: 'tree',
+                title: 'Florestas Preservadas',
+                description: `Com ${treesSaved.toLocaleString()} árvores preservadas, equivalentes a ${Math.floor(treesSaved / 100)} hectares de floresta.`,
+                stats: [
+                    { label: 'O₂ Gerado', value: `${(treesSaved * 118).toLocaleString()} kg/ano` },
+                    { label: 'Habitat Preservado', value: `${Math.floor(treesSaved * 0.5)} espécies` }
+                ]
+            },
+            {
+                id: 'water',
+                icon: 'water',
+                title: 'Recursos Hídricos',
+                description: `Economia de ${Math.floor(waterSaved).toLocaleString()} litros de água, suficiente para abastecer ${Math.floor(waterSaved / 150)} famílias por mês.`,
+                stats: [
+                    { label: 'Piscinas Olímpicas', value: `${Math.floor(waterSaved / 2500000)} unidades` },
+                    { label: 'Dias de consumo', value: `${Math.floor(waterSaved / 150)} dias` }
+                ]
+            },
+            {
+                id: 'energy',
+                icon: 'bolt',
+                title: 'Energia Renovável',
+                description: `${Math.floor(energySaved).toLocaleString()} kWh economizados, equivalente a ${Math.floor(energySaved / 150)} meses de consumo residencial.`,
+                stats: [
+                    { label: 'Casas abastecidas', value: `${Math.floor(energySaved / 150)} meses` },
+                    { label: 'Carvão evitado', value: `${Math.floor(energySaved * 0.5)} kg` }
+                ]
+            },
+            {
+                id: 'air',
+                icon: 'leaf',
+                title: 'Qualidade do Ar',
+                description: `${Math.floor(carbonSaved).toLocaleString()} kg de CO₂ deixaram de ser emitidos, equivalente a ${Math.floor(carbonSaved / 20)} carros populares.`,
+                stats: [
+                    { label: 'Árvores necessárias', value: `${Math.floor(carbonSaved / 22)} unidades` },
+                    { label: 'Voos SP-Rio', value: `${Math.floor(carbonSaved / 100)} viagens` }
+                ]
+            }
+        ];
+
+        res.json({ benefits });
+    } catch (error) {
+        console.error('❌ Erro no benefits:', error);
+        res.json({ benefits: [] });
     }
 });
 
