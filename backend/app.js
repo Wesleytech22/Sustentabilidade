@@ -749,34 +749,109 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
     try {
         const { name, status } = req.body;
         const route = await Route.findById(req.params.id);
-        if (!route) return res.status(404).json({ error: 'Rota não encontrada' });
-        if (route.userId.toString() !== req.userId.toString()) return res.status(403).json({ error: 'Acesso não autorizado' });
+
+        if (!route) {
+            return res.status(404).json({ error: 'Rota não encontrada' });
+        }
+
+        if (route.userId.toString() !== req.userId.toString()) {
+            return res.status(403).json({ error: 'Acesso não autorizado' });
+        }
+
         if (name) route.name = name;
+
         if (status) {
-            route.status = status;
-            if (status === 'COMPLETED') {
+            const oldStatus = route.status;
+
+            // Se for iniciar coleta (IN_PROGRESS)
+            if (status === 'IN_PROGRESS') {
+                const today = new Date();
+                today.setHours(8, 0, 0, 0); // Horário comercial padrão
+
+                // Se a data da rota for maior que hoje (coleta adiantada)
+                if (route.date > today) {
+                    const oldDate = route.date;
+                    route.date = today;
+                    console.log(`📅 Coleta adiantada: "${route.name}" - data alterada de ${oldDate.toLocaleDateString('pt-BR')} para ${today.toLocaleDateString('pt-BR')}`);
+
+                    // Atualizar a data no evento associado
+                    if (route.eventInfo && route.eventInfo.eventId) {
+                        await Event.findByIdAndUpdate(route.eventInfo.eventId, {
+                            scheduledCollectionDate: today
+                        });
+                        console.log(`✅ Evento ${route.eventInfo.eventName} atualizado com nova data de coleta`);
+                    }
+                }
+                route.status = status;
+
+            } else if (status === 'COMPLETED') {
+                route.status = status;
                 route.completedAt = new Date();
+
+                // Atualizar status do evento para finalizado
+                if (route.eventInfo && route.eventInfo.eventId) {
+                    await Event.findByIdAndUpdate(route.eventInfo.eventId, {
+                        status: 'finalizado'
+                    });
+                    console.log(`✅ Evento ${route.eventInfo.eventName} atualizado para FINALIZADO`);
+                }
+
+                // MARCAR TODOS OS PONTOS COMO COLETADOS
                 for (const point of route.points) {
                     if (point.pointId) {
                         const collectionPoint = await CollectionPoint.findById(point.pointId);
-                        if (collectionPoint && !point.collectedAt) {
-                            point.collectedAt = new Date();
-                            point.actualVolume = point.estimatedVolume || 0;
-                            const collection = new Collection({ collectionPointId: point.pointId, routeId: route._id, wasteVolume: point.estimatedVolume || 0, wasteType: collectionPoint.wasteTypes?.[0] || 'outros', notes: `Coleta automática ao finalizar rota: ${route.name}`, userId: req.userId, date: new Date() });
-                            await collection.save();
-                            collectionPoint.currentVolume = (collectionPoint.currentVolume || 0) + (point.estimatedVolume || 0);
-                            await collectionPoint.save();
-                            console.log(`✅ Ponto ${collectionPoint.name} marcado como coletado automaticamente`);
+                        if (collectionPoint) {
+                            if (!point.collectedAt) {
+                                point.collectedAt = new Date();
+                                point.actualVolume = point.estimatedVolume || 0;
+
+                                const collection = new Collection({
+                                    collectionPointId: point.pointId,
+                                    routeId: route._id,
+                                    wasteVolume: point.estimatedVolume || 0,
+                                    wasteType: collectionPoint.wasteTypes?.[0] || 'outros',
+                                    notes: `Coleta automática ao finalizar rota: ${route.name}`,
+                                    userId: req.userId,
+                                    date: new Date()
+                                });
+                                await collection.save();
+
+                                collectionPoint.currentVolume = (collectionPoint.currentVolume || 0) + (point.estimatedVolume || 0);
+                                await collectionPoint.save();
+                                console.log(`✅ Ponto ${collectionPoint.name} marcado como coletado automaticamente`);
+                            }
                         }
                     }
                 }
+
+            } else if (status === 'CANCELLED') {
+                route.status = status;
+
+                // Atualizar status do evento para cancelado
+                if (route.eventInfo && route.eventInfo.eventId) {
+                    await Event.findByIdAndUpdate(route.eventInfo.eventId, {
+                        status: 'cancelado'
+                    });
+                    console.log(`✅ Evento ${route.eventInfo.eventName} atualizado para CANCELADO`);
+                }
+            } else {
+                route.status = status;
             }
         }
+
         await route.save();
+
+        // Emitir evento via socket
         io.emit('route-updated', { routeId: route._id, status: route.status });
+
+        // Buscar a rota atualizada com os pontos populados
         const updatedRoute = await Route.findById(route._id).populate('points.pointId');
+
         res.json(updatedRoute);
-    } catch (error) { console.error('❌ Erro ao atualizar rota:', error); res.status(500).json({ error: error.message }); }
+    } catch (error) {
+        console.error('❌ Erro ao atualizar rota:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 app.get('/api/routes/:id', authenticateToken, async (req, res) => {
@@ -1072,77 +1147,148 @@ app.get('/api/events/external/classification/:name', authenticateToken, async (r
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-app.post('/api/events/external/import/:eventId', authenticateToken, async (req, res) => {
+app.post('/api/events', authenticateToken, async (req, res) => {
     try {
-        const { eventId } = req.params;
-        const eventData = req.body;
-        console.log('📌 Importando evento:', eventId);
-        const existingEvent = await Event.findOne({ externalId: eventId, userId: req.userId });
-        if (existingEvent) return res.status(400).json({ error: 'Este evento já foi importado anteriormente' });
-        let latitude = null, longitude = null, address = eventData.address || '', city = eventData.city || 'Cotia', state = eventData.state || 'SP', zipCode = eventData.zipCode || '';
-        if (zipCode) {
+        const {
+            name, description, type, address, city, state, zipCode,
+            startDate, endDate, expectedAttendees, estimatedWaste,
+            latitude, longitude
+        } = req.body;
+
+        console.log('📌 Criando evento manual:', { name, address, city, zipCode });
+
+        // Calcular resíduos estimados
+        let finalEstimatedWaste = estimatedWaste;
+        if ((!finalEstimatedWaste || finalEstimatedWaste === 0) && expectedAttendees) {
+            finalEstimatedWaste = expectedAttendees * 0.5;
+        }
+
+        // Buscar coordenadas
+        let finalLatitude = latitude;
+        let finalLongitude = longitude;
+        let finalAddress = address;
+        let finalCity = city;
+        let finalState = state;
+
+        if ((!finalLatitude || !finalLongitude) && zipCode) {
             const geoResult = await getCoordinatesByZipCode(zipCode);
             if (geoResult.success && geoResult.latitude && geoResult.longitude) {
-                latitude = geoResult.latitude; longitude = geoResult.longitude;
-                address = geoResult.address || address; city = geoResult.city || city; state = geoResult.state || state;
-                console.log(`📍 Coordenadas via CEP: ${latitude}, ${longitude}`);
+                finalLatitude = geoResult.latitude;
+                finalLongitude = geoResult.longitude;
+                finalAddress = geoResult.address || finalAddress;
+                finalCity = geoResult.city || finalCity;
+                finalState = geoResult.state || finalState;
             }
         }
-        if (!latitude || !longitude) {
-            const searchAddress = `${address}, ${city}, ${state}, Brasil`;
-            try {
-                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', { params: { q: searchAddress, format: 'json', limit: 1, countrycodes: 'br' }, headers: { 'User-Agent': 'EcoRoute/1.0' }, timeout: 8000 });
-                if (nominatimResponse.data && nominatimResponse.data.length > 0) {
-                    latitude = parseFloat(nominatimResponse.data[0].lat); longitude = parseFloat(nominatimResponse.data[0].lon);
-                    console.log(`📍 Coordenadas via Nominatim: ${latitude}, ${longitude}`);
-                }
-            } catch (error) { console.log(`⚠️ Erro Nominatim: ${error.message}`); }
+
+        if (!finalLatitude || !finalLongitude) {
+            finalLatitude = -23.6022;
+            finalLongitude = -46.9194;
         }
-        if (!latitude || !longitude) { latitude = -23.6022; longitude = -46.9194; console.log(`⚠️ Usando coordenadas padrão`); }
+
+        const locationObj = {
+            type: 'Point',
+            coordinates: [Number(finalLongitude), Number(finalLatitude)]
+        };
+
+        // 1. CRIAR EVENTO
         const event = new Event({
-            name: eventData.name, description: eventData.description || `Evento importado: ${eventData.name}`,
-            type: eventData.classification === 'Sports' ? 'evento_esportivo' : 'show',
-            address: address, city: city, state: state, zipCode: zipCode,
-            startDate: new Date(eventData.startDate), endDate: new Date(eventData.endDate || eventData.startDate),
-            expectedAttendees: eventData.expectedAttendees || 5000, estimatedWaste: eventData.estimatedWaste || 2500,
-            status: 'planejado', venueName: eventData.venueName, imageUrl: eventData.imageUrl, eventUrl: eventData.eventUrl,
-            externalId: eventId, source: 'ticketmaster', userId: req.userId
+            name, description: description || '',
+            type: type || 'outro',
+            address: finalAddress || '',
+            city: finalCity || 'Cotia',
+            state: finalState ? finalState.toUpperCase() : 'SP',
+            zipCode: zipCode || '',
+            location: locationObj,
+            latitude: finalLatitude,
+            longitude: finalLongitude,
+            startDate: new Date(startDate),
+            endDate: endDate ? new Date(endDate) : new Date(startDate),
+            expectedAttendees: Number(expectedAttendees) || 0,
+            estimatedWaste: Number(finalEstimatedWaste) || 0,
+            wasteCollected: 0,
+            status: 'agendado',
+            source: 'manual',
+            userId: req.userId
         });
-        if (latitude && longitude) event.setCoordinates(latitude, longitude);
         await event.save();
-        console.log(`✅ Evento criado: ${event.name}`);
+
+        // 2. CRIAR PONTO DE COLETA (COM VOLUME INICIAL 0)
         const point = new CollectionPoint({
-            name: `${event.name} - Evento`, address: address, city: city, state: state, zipCode: zipCode,
-            capacity: event.estimatedWaste * 2, currentVolume: 0, wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
-            userId: req.userId, status: 'ACTIVE', location: event.location || { type: 'Point', coordinates: [longitude, latitude] }
+            name: `${event.name} - Evento`,
+            address: event.address,
+            city: event.city,
+            state: event.state,
+            zipCode: event.zipCode,
+            capacity: event.estimatedWaste * 2,
+            currentVolume: 0,  // 👈 COMEÇA COM 0 (NÃO COLETADO AINDA)
+            wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
+            userId: req.userId,
+            status: 'ACTIVE',
+            location: locationObj
         });
         await point.save();
-        console.log(`✅ Ponto criado: ${point.name}`);
+
+        // 3. REGISTRAR COLETA (mas marca como pendente no ponto)
+        // A coleta é registrada, mas o ponto só atualiza quando a rota for concluída
         const collection = new Collection({
-            collectionPointId: point._id, wasteVolume: event.estimatedWaste, wasteType: 'outros',
-            notes: `Coleta inicial do evento: ${event.name}`, userId: req.userId, date: new Date()
+            collectionPointId: point._id,
+            wasteVolume: event.estimatedWaste,
+            wasteType: 'outros',
+            notes: `Coleta programada para o evento: ${event.name}. Aguardando execução da rota.`,
+            userId: req.userId,
+            date: new Date()
         });
         await collection.save();
-        console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
+        console.log(`✅ Coleta registrada (pendente): ${event.estimatedWaste} kg`);
+
+        // 4. CRIAR ROTA (COM PONTO PENDENTE)
         const routeDate = getNextCollectionDate();
+
         const route = new Route({
-            name: `${event.name} - Rota de Coleta`, description: `Rota para coleta de resíduos do evento ${event.name}.`,
-            date: routeDate, points: [{ pointId: point._id, order: 1, estimatedVolume: event.estimatedWaste, actualVolume: 0, collectedAt: null }],
-            totalDistance: 0, totalWaste: event.estimatedWaste, fuelConsumption: 0, carbonFootprint: event.estimatedWaste * 0.13,
-            status: 'PLANNED', source: 'events', userId: req.userId,
-            eventInfo: { eventId: event._id, eventName: event.name, eventDate: event.startDate, eventLocation: address }
+            name: `${event.name} - Coleta Pós-Evento`,
+            description: `Coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
+            date: routeDate,
+            points: [{
+                pointId: point._id,
+                order: 1,
+                estimatedVolume: event.estimatedWaste,
+                actualVolume: 0,        // 👈 INICIA COM 0 (NÃO COLETADO)
+                collectedAt: null        // 👈 INICIA COMO NULL (PENDENTE)
+            }],
+            totalDistance: 0,
+            totalWaste: event.estimatedWaste,
+            fuelConsumption: 0,
+            carbonFootprint: event.estimatedWaste * 0.13,
+            status: 'PLANNED',           // 👈 INICIA COMO PLANEJADA
+            source: 'events',
+            userId: req.userId,
+            eventInfo: {
+                eventId: event._id,
+                eventName: event.name,
+                eventDate: event.startDate,
+                eventLocation: event.address
+            }
         });
         await route.save();
-        console.log(`✅ Rota criada: ${route.name}`);
-        event.routeId = route._id; event.scheduledCollectionDate = routeDate; await event.save();
-        io.emit('event-imported', { eventId: event._id, eventName: event.name, routeId: route._id, routeName: route.name });
+
+        // Atualizar evento com routeId
+        event.routeId = route._id;
+        event.scheduledCollectionDate = routeDate;
+        await event.save();
+
         res.status(201).json({
-            success: true, message: `Evento "${event.name}" importado com sucesso!`,
-            event: { id: event._id, name: event.name, date: event.startDate, estimatedWaste: event.estimatedWaste, address: event.address, city: event.city, coordinates: { latitude, longitude } },
-            point: { id: point._id, name: point.name, address: point.address },
-            route: { id: route._id, name: route.name, date: route.date, totalWaste: route.totalWaste }
+            success: true,
+            message: `Evento "${event.name}" criado com sucesso! Coleta programada.`,
+            event: { id: event._id, name: event.name, status: event.status },
+            point: { id: point._id, name: point.name, currentVolume: point.currentVolume },
+            route: { id: route._id, name: route.name, status: route.status }
         });
-    } catch (error) { console.error('❌ Erro ao importar evento:', error); res.status(500).json({ error: error.message }); }
+
+    } catch (error) {
+        console.error('❌ Erro ao criar evento:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ========== ROTAS DE EVENTOS ==========
@@ -1171,26 +1317,197 @@ app.get('/api/events/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// POST /api/events - Criar evento manualmente
+// POST /api/events - Criar evento manualmente (COM PONTO E ROTA)
 app.post('/api/events', authenticateToken, async (req, res) => {
     try {
-        const eventData = { ...req.body, userId: req.userId };
+        const {
+            name, description, type, address, city, state, zipCode,
+            startDate, endDate, expectedAttendees, estimatedWaste,
+            latitude, longitude
+        } = req.body;
+
+        console.log('📌 Criando evento manual:', { name, address, city, zipCode });
 
         // Calcular resíduos estimados se não informado
-        if (!eventData.estimatedWaste && eventData.expectedAttendees) {
-            eventData.estimatedWaste = eventData.expectedAttendees * 0.5;
+        let finalEstimatedWaste = estimatedWaste;
+        if ((!finalEstimatedWaste || finalEstimatedWaste === 0) && expectedAttendees) {
+            finalEstimatedWaste = expectedAttendees * 0.5;
         }
+
+        // Buscar coordenadas se não foram fornecidas
+        let finalLatitude = latitude;
+        let finalLongitude = longitude;
+        let finalAddress = address;
+        let finalCity = city;
+        let finalState = state;
+
+        // Se não tem coordenadas mas tem CEP, buscar
+        if ((!finalLatitude || !finalLongitude) && zipCode) {
+            const geoResult = await getCoordinatesByZipCode(zipCode);
+            if (geoResult.success && geoResult.latitude && geoResult.longitude) {
+                finalLatitude = geoResult.latitude;
+                finalLongitude = geoResult.longitude;
+                finalAddress = geoResult.address || finalAddress;
+                finalCity = geoResult.city || finalCity;
+                finalState = geoResult.state || finalState;
+                console.log(`📍 Coordenadas via CEP: ${finalLatitude}, ${finalLongitude}`);
+            }
+        }
+
+        // Se ainda não tem coordenadas, tentar pelo endereço
+        if ((!finalLatitude || !finalLongitude) && finalAddress && finalCity) {
+            const searchAddress = `${finalAddress}, ${finalCity}, ${finalState || 'SP'}, Brasil`;
+            try {
+                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
+                    params: { q: searchAddress, format: 'json', limit: 1, countrycodes: 'br' },
+                    headers: { 'User-Agent': 'EcoRoute/1.0' },
+                    timeout: 8000
+                });
+                if (nominatimResponse.data && nominatimResponse.data.length > 0) {
+                    finalLatitude = parseFloat(nominatimResponse.data[0].lat);
+                    finalLongitude = parseFloat(nominatimResponse.data[0].lon);
+                    console.log(`📍 Coordenadas via Nominatim: ${finalLatitude}, ${finalLongitude}`);
+                }
+            } catch (error) {
+                console.log(`⚠️ Erro Nominatim: ${error.message}`);
+            }
+        }
+
+        // Se ainda não tem coordenadas, usar padrão Cotia/SP
+        if (!finalLatitude || !finalLongitude) {
+            finalLatitude = -23.6022;
+            finalLongitude = -46.9194;
+            console.log(`⚠️ Usando coordenadas padrão (Cotia): ${finalLatitude}, ${finalLongitude}`);
+        }
+
+        // ========== CRIAR LOCATION VÁLIDA ==========
+        const locationObj = {
+            type: 'Point',
+            coordinates: [Number(finalLongitude), Number(finalLatitude)]
+        };
+
+        // ========== 1. CRIAR EVENTO ==========
+        const eventData = {
+            name,
+            description: description || '',
+            type: type || 'outro',
+            address: finalAddress || '',
+            city: finalCity || 'Cotia',
+            state: finalState ? finalState.toUpperCase() : 'SP',
+            zipCode: zipCode || '',
+            location: locationObj,
+            latitude: finalLatitude,
+            longitude: finalLongitude,
+            startDate: new Date(startDate),
+            endDate: endDate ? new Date(endDate) : new Date(startDate),
+            expectedAttendees: Number(expectedAttendees) || 0,
+            estimatedWaste: Number(finalEstimatedWaste) || 0,
+            wasteCollected: 0,
+            status: 'agendado',
+            source: 'manual',
+            userId: req.userId
+        };
 
         const event = new Event(eventData);
         await event.save();
-        res.status(201).json(event);
+        console.log(`✅ Evento criado: ${event.name}`);
+
+        // ========== 2. CRIAR PONTO DE COLETA ==========
+        const point = new CollectionPoint({
+            name: `${event.name} - Evento`,
+            address: event.address,
+            city: event.city,
+            state: event.state,
+            zipCode: event.zipCode,
+            capacity: event.estimatedWaste * 2,
+            currentVolume: 0,
+            wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
+            userId: req.userId,
+            status: 'ACTIVE',
+            location: locationObj
+        });
+        await point.save();
+        console.log(`✅ Ponto de coleta criado: ${point.name}`);
+
+        // ========== 3. REGISTRAR COLETA INICIAL ==========
+        const collection = new Collection({
+            collectionPointId: point._id,
+            wasteVolume: event.estimatedWaste,
+            wasteType: 'outros',
+            notes: `Coleta inicial do evento: ${event.name}`,
+            userId: req.userId,
+            date: new Date()
+        });
+        await collection.save();
+        console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
+
+        // ========== 4. CRIAR ROTA ==========
+        const routeDate = getNextCollectionDate();
+
+        const route = new Route({
+            name: `${event.name} - Rota de Coleta`,
+            description: `Rota para coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
+            date: routeDate,
+            points: [{
+                pointId: point._id,
+                order: 1,
+                estimatedVolume: event.estimatedWaste,
+                actualVolume: 0,
+                collectedAt: null
+            }],
+            totalDistance: 0,
+            totalWaste: event.estimatedWaste,
+            fuelConsumption: 0,
+            carbonFootprint: event.estimatedWaste * 0.13,
+            status: 'PLANNED',
+            source: 'events',
+            userId: req.userId,
+            eventInfo: {
+                eventId: event._id,
+                eventName: event.name,
+                eventDate: event.startDate,
+                eventLocation: event.address
+            }
+        });
+        await route.save();
+        console.log(`✅ Rota criada: ${route.name}`);
+
+        // ========== 5. ATUALIZAR EVENTO COM ROUTE_ID ==========
+        event.routeId = route._id;
+        event.scheduledCollectionDate = routeDate;
+        await event.save();
+
+        res.status(201).json({
+            success: true,
+            message: `Evento "${event.name}" criado com sucesso! Ponto de coleta e rota criados.`,
+            event: {
+                id: event._id,
+                name: event.name,
+                date: event.startDate,
+                estimatedWaste: event.estimatedWaste,
+                address: event.address,
+                city: event.city,
+                coordinates: { latitude: finalLatitude, longitude: finalLongitude }
+            },
+            point: {
+                id: point._id,
+                name: point.name,
+                address: point.address
+            },
+            route: {
+                id: route._id,
+                name: route.name,
+                date: route.date,
+                totalWaste: route.totalWaste
+            }
+        });
+
     } catch (error) {
         console.error('❌ Erro ao criar evento:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// POST /api/events/:id/finish - Finalizar evento (COM REGISTRO DE COLETA)
 app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
     try {
         const event = await Event.findOne({ _id: req.params.id, userId: req.userId });
@@ -1237,6 +1554,13 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
             }
         }
 
+        // Se não tem coordenadas, usar padrão
+        if (!latitude || !longitude) {
+            latitude = -23.6022;
+            longitude = -46.9194;
+            console.log(`⚠️ Usando coordenadas padrão (Cotia): ${latitude}, ${longitude}`);
+        }
+
         // ========== DETERMINAR TIPOS DE RESÍDUOS BASEADO NO TIPO DO EVENTO ==========
         let wasteTypes = ['plastico', 'papel', 'organico'];
 
@@ -1270,7 +1594,7 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
                 state: event.state || '',
                 zipCode: event.zipCode || '',
                 capacity: (event.estimatedWaste || 5000) * 2,
-                currentVolume: event.estimatedWaste || 5000,
+                currentVolume: 0,  // 👈 CORRIGIDO: COMEÇA COM 0 (NÃO COLETADO)
                 wasteTypes: wasteTypes,
                 userId: req.userId,
                 status: 'ACTIVE',
@@ -1280,14 +1604,13 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
                 }
             });
             await point.save();
-            console.log(`✅ Ponto de coleta criado: ${point.name}`);
+            console.log(`✅ Ponto de coleta criado: ${point.name} (volume: 0 kg)`);
         } else if (point) {
-            point.currentVolume = (point.currentVolume || 0) + (event.estimatedWaste || 0);
-            await point.save();
-            console.log(`✅ Ponto atualizado: ${point.name} - Volume: ${point.currentVolume} kg`);
+            // Não atualiza volume aqui - só atualiza quando a rota for concluída
+            console.log(`✅ Ponto já existe: ${point.name} (volume atual: ${point.currentVolume} kg)`);
         }
 
-        // ========== REGISTRAR COLETA ==========
+        // ========== REGISTRAR COLETA (PENDENTE) ==========
         if (point && event.estimatedWaste > 0) {
             const primaryWasteType = wasteTypes[0] || 'outros';
 
@@ -1295,12 +1618,12 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
                 collectionPointId: point._id,
                 wasteVolume: event.estimatedWaste,
                 wasteType: primaryWasteType,
-                notes: `Coleta do evento: ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg. Tipos: ${wasteTypes.join(', ')}`,
+                notes: `Coleta programada para o evento: ${event.name}. Aguardando execução da rota.`,
                 userId: req.userId,
                 date: new Date()
             });
             await collection.save();
-            console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg de ${primaryWasteType}`);
+            console.log(`✅ Coleta registrada (pendente): ${event.estimatedWaste} kg de ${primaryWasteType}`);
         }
 
         // ========== ATUALIZAR EVENTO ==========
@@ -1329,8 +1652,8 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
                     pointId: point._id,
                     order: 1,
                     estimatedVolume: event.estimatedWaste || 5000,
-                    actualVolume: event.estimatedWaste || 5000,
-                    collectedAt: new Date()
+                    actualVolume: 0,        // 👈 CORRIGIDO: INICIA COM 0 (NÃO COLETADO)
+                    collectedAt: null       // 👈 CORRIGIDO: INICIA COMO NULL (PENDENTE)
                 }],
                 totalDistance: 0,
                 totalWaste: event.estimatedWaste || 5000,
@@ -1347,7 +1670,7 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
                 }
             });
             await route.save();
-            console.log(`✅ Rota criada: ${route.name}`);
+            console.log(`✅ Rota criada: ${route.name} (status: PLANNED, pontos pendentes)`);
 
             event.routeId = route._id;
             event.scheduledCollectionDate = nextCollectionDate;
@@ -1356,24 +1679,66 @@ app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
 
         res.json({
             success: true,
-            message: point ? `Evento finalizado! ${event.estimatedWaste} kg de resíduos registrados.` : 'Evento finalizado, mas não foi possível criar ponto de coleta (sem coordenadas).',
+            message: point ? `Evento finalizado! Coleta de ${event.estimatedWaste} kg agendada.` : 'Evento finalizado, mas não foi possível criar ponto de coleta (sem coordenadas).',
             point: point ? {
                 id: point._id,
                 name: point.name,
                 wasteTypes: point.wasteTypes,
                 currentVolume: point.currentVolume
             } : null,
-            collection: point ? { wasteVolume: event.estimatedWaste, wasteType: wasteTypes[0] } : null,
+            collection: point ? { wasteVolume: event.estimatedWaste, wasteType: wasteTypes[0], status: 'pendente' } : null,
             route: route ? {
                 id: route._id,
                 name: route.name,
                 date: route.date,
-                totalWaste: route.totalWaste
+                totalWaste: route.totalWaste,
+                status: route.status
             } : null
         });
 
     } catch (error) {
         console.error('❌ Erro ao finalizar evento:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// PUT /api/events/:id/status - Atualizar status do evento baseado na rota
+app.put('/api/events/:id/status', authenticateToken, async (req, res) => {
+    try {
+        const { status } = req.body;
+        const event = await Event.findOne({ _id: req.params.id, userId: req.userId });
+
+        if (!event) {
+            return res.status(404).json({ error: 'Evento não encontrado' });
+        }
+
+        // Mapear status da rota para status do evento
+        let eventStatus = event.status;
+        switch (status) {
+            case 'IN_PROGRESS':
+                eventStatus = 'em_andamento';
+                break;
+            case 'COMPLETED':
+                eventStatus = 'finalizado';
+                break;
+            case 'CANCELLED':
+                eventStatus = 'cancelado';
+                break;
+            case 'PLANNED':
+                eventStatus = 'coleta_agendada';
+                break;
+            default:
+                eventStatus = status;
+        }
+
+        event.status = eventStatus;
+        await event.save();
+
+        console.log(`📌 Evento "${event.name}" atualizado: ${event.status}`);
+
+        res.json({ success: true, event: { id: event._id, name: event.name, status: event.status } });
+    } catch (error) {
+        console.error('❌ Erro ao atualizar status do evento:', error);
         res.status(500).json({ error: error.message });
     }
 });
