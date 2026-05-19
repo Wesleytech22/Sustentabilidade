@@ -199,13 +199,13 @@ const collectionSchema = new mongoose.Schema({
 }, { timestamps: true });
 const Collection = mongoose.model('Collection', collectionSchema);
 
-// ========== MODELO DE EVENTO (ADICIONADO) ==========
+// ========== MODELO DE EVENTO (ATUALIZADO COM NOVOS CAMPOS) ==========
 const eventSchema = new mongoose.Schema({
     name: { type: String, required: true },
     description: String,
     type: {
         type: String,
-        enum: ['show', 'festa', 'feira', 'evento_esportivo', 'outro'],
+        enum: ['show', 'festa', 'feira', 'evento_esportivo', 'restaurante', 'empresa', 'residencia', 'outro'],
         default: 'outro'
     },
     address: { type: String, required: true },
@@ -232,7 +232,6 @@ const eventSchema = new mongoose.Schema({
     wasteCollected: { type: Number, default: 0 },
     status: {
         type: String,
-        // ========== CORREÇÃO: Adicionado 'coleta_agendada' ao enum ==========
         enum: ['agendado', 'planejado', 'em_andamento', 'finalizado', 'cancelado', 'coleta_agendada'],
         default: 'agendado'
     },
@@ -248,7 +247,14 @@ const eventSchema = new mongoose.Schema({
     venueName: String,
     imageUrl: String,
     eventUrl: String,
-    importedAt: Date
+    importedAt: Date,
+
+    // ========== NOVOS CAMPOS ==========
+    responsible: { type: String, default: '' },        // Nome do responsável
+    contact: { type: String, default: '' },            // Telefone/WhatsApp
+    scheduleTime: { type: String, default: '08:00' },  // Horário da coleta
+    observations: { type: String, default: '' }        // Observações gerais
+
 }, { timestamps: true });
 
 // Método para definir coordenadas
@@ -1147,12 +1153,15 @@ app.get('/api/events/external/classification/:name', authenticateToken, async (r
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// POST /api/events - Criar evento manualmente (COM NOVOS CAMPOS)
 app.post('/api/events', authenticateToken, async (req, res) => {
     try {
         const {
             name, description, type, address, city, state, zipCode,
             startDate, endDate, expectedAttendees, estimatedWaste,
-            latitude, longitude
+            latitude, longitude,
+            // ========== NOVOS CAMPOS ==========
+            responsible, contact, scheduleTime, observations
         } = req.body;
 
         console.log('📌 Criando evento manual:', { name, address, city, zipCode });
@@ -1191,7 +1200,7 @@ app.post('/api/events', authenticateToken, async (req, res) => {
             coordinates: [Number(finalLongitude), Number(finalLatitude)]
         };
 
-        // 1. CRIAR EVENTO
+        // 1. CRIAR EVENTO COM NOVOS CAMPOS
         const event = new Event({
             name, description: description || '',
             type: type || 'outro',
@@ -1209,11 +1218,17 @@ app.post('/api/events', authenticateToken, async (req, res) => {
             wasteCollected: 0,
             status: 'agendado',
             source: 'manual',
-            userId: req.userId
+            userId: req.userId,
+            // ========== NOVOS CAMPOS ==========
+            responsible: responsible || '',
+            contact: contact || '',
+            scheduleTime: scheduleTime || '08:00',
+            observations: observations || ''
         });
         await event.save();
+        console.log(`✅ Evento criado: ${event.name}`);
 
-        // 2. CRIAR PONTO DE COLETA (COM VOLUME INICIAL 0)
+        // 2. CRIAR PONTO DE COLETA
         const point = new CollectionPoint({
             name: `${event.name} - Evento`,
             address: event.address,
@@ -1221,46 +1236,46 @@ app.post('/api/events', authenticateToken, async (req, res) => {
             state: event.state,
             zipCode: event.zipCode,
             capacity: event.estimatedWaste * 2,
-            currentVolume: 0,  // 👈 COMEÇA COM 0 (NÃO COLETADO AINDA)
+            currentVolume: 0,
             wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
             userId: req.userId,
             status: 'ACTIVE',
             location: locationObj
         });
         await point.save();
+        console.log(`✅ Ponto de coleta criado: ${point.name}`);
 
-        // 3. REGISTRAR COLETA (mas marca como pendente no ponto)
-        // A coleta é registrada, mas o ponto só atualiza quando a rota for concluída
+        // 3. REGISTRAR COLETA INICIAL
         const collection = new Collection({
             collectionPointId: point._id,
             wasteVolume: event.estimatedWaste,
             wasteType: 'outros',
-            notes: `Coleta programada para o evento: ${event.name}. Aguardando execução da rota.`,
+            notes: `Coleta inicial do evento: ${event.name}`,
             userId: req.userId,
             date: new Date()
         });
         await collection.save();
-        console.log(`✅ Coleta registrada (pendente): ${event.estimatedWaste} kg`);
+        console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
 
-        // 4. CRIAR ROTA (COM PONTO PENDENTE)
+        // 4. CRIAR ROTA
         const routeDate = getNextCollectionDate();
 
         const route = new Route({
-            name: `${event.name} - Coleta Pós-Evento`,
+            name: `${event.name} - Rota de Coleta`,
             description: `Coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
             date: routeDate,
             points: [{
                 pointId: point._id,
                 order: 1,
                 estimatedVolume: event.estimatedWaste,
-                actualVolume: 0,        // 👈 INICIA COM 0 (NÃO COLETADO)
-                collectedAt: null        // 👈 INICIA COMO NULL (PENDENTE)
+                actualVolume: 0,
+                collectedAt: null
             }],
             totalDistance: 0,
             totalWaste: event.estimatedWaste,
             fuelConsumption: 0,
             carbonFootprint: event.estimatedWaste * 0.13,
-            status: 'PLANNED',           // 👈 INICIA COMO PLANEJADA
+            status: 'PLANNED',
             source: 'events',
             userId: req.userId,
             eventInfo: {
@@ -1271,18 +1286,40 @@ app.post('/api/events', authenticateToken, async (req, res) => {
             }
         });
         await route.save();
+        console.log(`✅ Rota criada: ${route.name}`);
 
-        // Atualizar evento com routeId
+        // 5. ATUALIZAR EVENTO COM ROUTE_ID
         event.routeId = route._id;
         event.scheduledCollectionDate = routeDate;
         await event.save();
 
         res.status(201).json({
             success: true,
-            message: `Evento "${event.name}" criado com sucesso! Coleta programada.`,
-            event: { id: event._id, name: event.name, status: event.status },
-            point: { id: point._id, name: point.name, currentVolume: point.currentVolume },
-            route: { id: route._id, name: route.name, status: route.status }
+            message: `Evento "${event.name}" criado com sucesso! Ponto de coleta e rota criados.`,
+            event: {
+                id: event._id,
+                name: event.name,
+                date: event.startDate,
+                estimatedWaste: event.estimatedWaste,
+                address: event.address,
+                city: event.city,
+                coordinates: { latitude: finalLatitude, longitude: finalLongitude },
+                responsible: event.responsible,
+                contact: event.contact,
+                scheduleTime: event.scheduleTime,
+                observations: event.observations
+            },
+            point: {
+                id: point._id,
+                name: point.name,
+                address: point.address
+            },
+            route: {
+                id: route._id,
+                name: route.name,
+                date: route.date,
+                totalWaste: route.totalWaste
+            }
         });
 
     } catch (error) {
@@ -1751,6 +1788,198 @@ app.delete('/api/events/:id', authenticateToken, async (req, res) => {
         res.json({ message: 'Evento deletado com sucesso' });
     } catch (error) {
         console.error('❌ Erro ao deletar evento:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== ROTA DE IMPORTAÇÃO DE EVENTOS EXTERNOS ==========
+app.post('/api/events/external/import/:eventId', authenticateToken, async (req, res) => {
+    try {
+        const { eventId } = req.params;
+        const eventData = req.body;
+
+        console.log('📌 Importando evento externo:', eventId);
+        console.log('📦 Evento:', eventData.name);
+
+        // Verificar se evento já foi importado
+        const existingEvent = await Event.findOne({ externalId: eventId, userId: req.userId });
+        if (existingEvent) {
+            return res.status(400).json({ error: 'Este evento já foi importado anteriormente' });
+        }
+
+        // Buscar coordenadas
+        let latitude = null;
+        let longitude = null;
+        let address = eventData.address || '';
+        let city = eventData.city || 'Cotia';
+        let state = eventData.state || 'SP';
+        let zipCode = eventData.zipCode || '';
+
+        if (zipCode) {
+            const geoResult = await getCoordinatesByZipCode(zipCode);
+            if (geoResult.success && geoResult.latitude && geoResult.longitude) {
+                latitude = geoResult.latitude;
+                longitude = geoResult.longitude;
+                address = geoResult.address || address;
+                city = geoResult.city || city;
+                state = geoResult.state || state;
+                console.log(`📍 Coordenadas via CEP: ${latitude}, ${longitude}`);
+            }
+        }
+
+        if (!latitude || !longitude) {
+            const searchAddress = `${address}, ${city}, ${state}, Brasil`;
+            try {
+                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
+                    params: { q: searchAddress, format: 'json', limit: 1, countrycodes: 'br' },
+                    headers: { 'User-Agent': 'EcoRoute/1.0' },
+                    timeout: 8000
+                });
+                if (nominatimResponse.data && nominatimResponse.data.length > 0) {
+                    latitude = parseFloat(nominatimResponse.data[0].lat);
+                    longitude = parseFloat(nominatimResponse.data[0].lon);
+                    console.log(`📍 Coordenadas via Nominatim: ${latitude}, ${longitude}`);
+                }
+            } catch (error) {
+                console.log(`⚠️ Erro Nominatim: ${error.message}`);
+            }
+        }
+
+        if (!latitude || !longitude) {
+            latitude = -23.6022;
+            longitude = -46.9194;
+            console.log(`⚠️ Usando coordenadas padrão (Cotia)`);
+        }
+
+        const locationObj = {
+            type: 'Point',
+            coordinates: [Number(longitude), Number(latitude)]
+        };
+
+        // Determinar tipo do evento
+        let eventType = 'outro';
+        const classification = eventData.classification || '';
+        if (classification === 'Music') eventType = 'show';
+        else if (classification === 'Sports') eventType = 'evento_esportivo';
+
+        // Criar evento com NOVOS CAMPOS
+        const event = new Event({
+            name: eventData.name,
+            description: eventData.description || `Evento importado: ${eventData.name}`,
+            type: eventType,
+            address: address,
+            city: city,
+            state: state,
+            zipCode: zipCode,
+            location: locationObj,
+            latitude: latitude,
+            longitude: longitude,
+            startDate: new Date(eventData.startDate),
+            endDate: new Date(eventData.endDate || eventData.startDate),
+            expectedAttendees: eventData.expectedAttendees || 5000,
+            estimatedWaste: eventData.estimatedWaste || 2500,
+            status: 'planejado',
+            venueName: eventData.venueName,
+            imageUrl: eventData.imageUrl,
+            eventUrl: eventData.eventUrl,
+            externalId: eventId,
+            source: 'ticketmaster',
+            userId: req.userId,
+            // ========== NOVOS CAMPOS ==========
+            responsible: eventData.responsible || '',
+            contact: eventData.contact || '',
+            scheduleTime: eventData.scheduleTime || '08:00',
+            observations: eventData.observations || `Evento importado do Ticketmaster. Local: ${eventData.venueName || 'Não informado'}`
+        });
+
+        await event.save();
+        console.log(`✅ Evento criado: ${event.name}`);
+
+        // Criar ponto de coleta
+        const point = new CollectionPoint({
+            name: `${event.name} - Evento`,
+            address: address,
+            city: city,
+            state: state,
+            zipCode: zipCode,
+            capacity: event.estimatedWaste * 2,
+            currentVolume: 0,
+            wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
+            userId: req.userId,
+            status: 'ACTIVE',
+            location: locationObj
+        });
+        await point.save();
+        console.log(`✅ Ponto de coleta criado: ${point.name}`);
+
+        // Registrar coleta pendente
+        const collection = new Collection({
+            collectionPointId: point._id,
+            wasteVolume: event.estimatedWaste,
+            wasteType: 'outros',
+            notes: `Coleta programada para o evento: ${event.name}.`,
+            userId: req.userId,
+            date: new Date()
+        });
+        await collection.save();
+        console.log(`✅ Coleta registrada (pendente): ${event.estimatedWaste} kg`);
+
+        // Criar rota
+        const routeDate = getNextCollectionDate();
+
+        const route = new Route({
+            name: `${event.name} - Rota de Coleta`,
+            description: `Coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
+            date: routeDate,
+            points: [{
+                pointId: point._id,
+                order: 1,
+                estimatedVolume: event.estimatedWaste,
+                actualVolume: 0,
+                collectedAt: null
+            }],
+            totalDistance: 0,
+            totalWaste: event.estimatedWaste,
+            fuelConsumption: 0,
+            carbonFootprint: event.estimatedWaste * 0.13,
+            status: 'PLANNED',
+            source: 'events',
+            userId: req.userId,
+            eventInfo: {
+                eventId: event._id,
+                eventName: event.name,
+                eventDate: event.startDate,
+                eventLocation: address
+            }
+        });
+        await route.save();
+        console.log(`✅ Rota criada: ${route.name}`);
+
+        event.routeId = route._id;
+        event.scheduledCollectionDate = routeDate;
+        await event.save();
+
+        res.status(201).json({
+            success: true,
+            message: `Evento "${event.name}" importado com sucesso!`,
+            event: {
+                id: event._id,
+                name: event.name,
+                date: event.startDate,
+                estimatedWaste: event.estimatedWaste,
+                address: event.address,
+                city: event.city,
+                responsible: event.responsible,
+                contact: event.contact,
+                scheduleTime: event.scheduleTime,
+                observations: event.observations
+            },
+            point: { id: point._id, name: point.name },
+            route: { id: route._id, name: route.name, date: route.date }
+        });
+
+    } catch (error) {
+        console.error('❌ Erro ao importar evento:', error);
         res.status(500).json({ error: error.message });
     }
 });
