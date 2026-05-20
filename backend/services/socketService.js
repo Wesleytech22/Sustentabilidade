@@ -16,11 +16,20 @@ const REQUEST_TIMEOUT = 5 * 60 * 1000; // 5 minutos
 const initSocket = (server) => {
   io = new Server(server, {
     cors: {
-      origin: ['http://localhost:3000', 'http://localhost:3002', 'http://localhost:3001'],
-      credentials: true
+      origin: [
+        'http://localhost:3000', 
+        'http://localhost:3002', 
+        'http://localhost:3001',
+        'https://frontend---sustentabilidade.vercel.app',
+        'https://*.vercel.app'
+      ],
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization']
     },
     pingTimeout: 60000,
-    pingInterval: 25000
+    pingInterval: 25000,
+    transports: ['websocket', 'polling']
   });
 
   io.use(async (socket, next) => {
