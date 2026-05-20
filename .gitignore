@@ -1,7 +1,7 @@
-node_modules
-# Keep environment variables out of version control
+node_modules/
 .env
-
-/generated/prisma
-.vercel
-ai-service/models/*.pt
+.env.local
+.env.production
+*.log
+.DS_Store
+yolo_service/__pycache__/

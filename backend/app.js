@@ -2103,6 +2103,215 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
     }
 });
 
+// ============================================
+// ========== ROTAS DE DETECÇÃO (YOLO) ==========
+// ============================================
+
+// Configuração do serviço YOLO
+const YOLO_SERVICE_URL = process.env.YOLO_SERVICE_URL || 'http://localhost:5001';
+const FormData = require('form-data');
+
+// Middleware para upload de arquivos (se não tiver)
+const multer = require('multer');
+const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+});
+
+/**
+ * POST /api/detect
+ * Detecta resíduos em uma imagem enviada
+ * 
+ * @param {file} image - Arquivo de imagem (jpg, png)
+ * @returns {Object} Lista de resíduos detectados + frases de conscientização
+ */
+app.post('/api/detect', authenticateToken, upload.single('image'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Nenhuma imagem enviada' });
+        }
+
+        console.log(`🔍 Detectando resíduos na imagem: ${req.file.originalname} (${req.file.size} bytes)`);
+
+        // Criar form-data para enviar ao serviço Python
+        const formData = new FormData();
+        formData.append('image', req.file.buffer, {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        });
+
+        // Chamar serviço YOLO
+        const response = await axios.post(`${YOLO_SERVICE_URL}/detect`, formData, {
+            headers: {
+                ...formData.getHeaders(),
+                'Content-Type': 'multipart/form-data'
+            },
+            timeout: 30000 // 30 segundos
+        });
+
+        console.log(`✅ Detecção concluída: ${response.data.total_residuos} resíduos encontrados`);
+
+        // Retornar resultado com frases de conscientização
+        res.json({
+            success: true,
+            deteccoes: response.data.deteccoes,
+            total_residuos: response.data.total_residuos,
+            resumo_por_tipo: response.data.resumo_por_tipo,
+            frases_conscientizacao: response.data.frases_conscientizacao,
+            impacto_estimado: response.data.impacto_estimado,
+            modo: response.data.modo
+        });
+
+    } catch (error) {
+        console.error('❌ Erro na detecção:', error.message);
+        
+        // Fallback: simular detecção se o serviço Python estiver offline
+        if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+            console.log('⚠️ Serviço YOLO offline, usando simulação local');
+            
+            const simulacao = {
+                success: true,
+                deteccoes: [
+                    { tipo: 'plastico', confianca: 0.87 },
+                    { tipo: 'papel', confianca: 0.92 },
+                    { tipo: 'vidro', confianca: 0.76 }
+                ],
+                total_residuos: 3,
+                resumo_por_tipo: { plastico: 1, papel: 1, vidro: 1 },
+                frases_conscientizacao: [
+                    "💚 Uma garrafa PET leva mais de 400 anos para se decompor!",
+                    "♻️ Reciclar 1 tonelada de plástico economiza 5.000 kWh de energia.",
+                    "🌱 Pequenas atitudes mudam o mundo!"
+                ],
+                impacto_estimado: {
+                    co2_evitado_kg: 2.8,
+                    energia_economizada_kwh: 11,
+                    agua_economizada_litros: 310,
+                    arvores_preservadas: 0.05
+                },
+                modo: 'simulacao_fallback'
+            };
+            
+            return res.json(simulacao);
+        }
+        
+        res.status(500).json({ error: 'Erro ao processar imagem', details: error.message });
+    }
+});
+
+/**
+ * POST /api/detect/base64
+ * Detecta resíduos em uma imagem em base64 (para mobile)
+ */
+app.post('/api/detect/base64', authenticateToken, async (req, res) => {
+    try {
+        const { image } = req.body;
+        
+        if (!image) {
+            return res.status(400).json({ error: 'Nenhuma imagem em base64 fornecida' });
+        }
+
+        console.log(`🔍 Detectando resíduos via base64`);
+
+        // Chamar serviço YOLO
+        const response = await axios.post(`${YOLO_SERVICE_URL}/detect`, { image }, {
+            timeout: 30000
+        });
+
+        res.json({
+            success: true,
+            deteccoes: response.data.deteccoes,
+            total_residuos: response.data.total_residuos,
+            resumo_por_tipo: response.data.resumo_por_tipo,
+            frases_conscientizacao: response.data.frases_conscientizacao,
+            impacto_estimado: response.data.impacto_estimado
+        });
+
+    } catch (error) {
+        console.error('❌ Erro na detecção base64:', error.message);
+        res.status(500).json({ error: 'Erro ao processar imagem' });
+    }
+});
+
+/**
+ * GET /api/detect/frases
+ * Retorna frases de conscientização aleatórias
+ */
+app.get('/api/detect/frases', authenticateToken, async (req, res) => {
+    try {
+        const { tipo, quantidade = 1 } = req.query;
+        
+        let url = `${YOLO_SERVICE_URL}/frases`;
+        if (tipo) url += `?tipo=${tipo}`;
+        
+        const response = await axios.get(url, { timeout: 5000 });
+        
+        // Pegar frases aleatórias
+        let frases = [];
+        if (tipo && response.data[tipo]) {
+            frases = response.data[tipo];
+        } else {
+            // Misturar frases de todos os tipos
+            const todasFrases = [];
+            for (const key in response.data) {
+                if (Array.isArray(response.data[key])) {
+                    todasFrases.push(...response.data[key]);
+                }
+            }
+            frases = todasFrases;
+        }
+        
+        // Embaralhar e pegar a quantidade solicitada
+        const shuffled = frases.sort(() => 0.5 - Math.random());
+        const selecionadas = shuffled.slice(0, parseInt(quantidade));
+        
+        res.json({
+            success: true,
+            frases: selecionadas,
+            total_disponiveis: frases.length
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro ao buscar frases:', error.message);
+        
+        // Fallback local
+        const frasesLocal = [
+            "♻️ Reciclar é transformar o que seria lixo em novo recurso!",
+            "🌍 Pequenas atitudes mudam o mundo! Recicle seus resíduos.",
+            "💚 Uma garrafa PET leva mais de 400 anos para se decompor.",
+            "🌱 O futuro do planeta depende das nossas escolhas hoje."
+        ];
+        
+        res.json({
+            success: true,
+            frases: frasesLocal.slice(0, parseInt(quantidade)),
+            modo: 'fallback'
+        });
+    }
+});
+
+/**
+ * GET /api/detect/health
+ * Verifica se o serviço YOLO está ativo
+ */
+app.get('/api/detect/health', authenticateToken, async (req, res) => {
+    try {
+        const response = await axios.get(`${YOLO_SERVICE_URL}/health`, { timeout: 3000 });
+        res.json({
+            yolo_service: 'online',
+            modo: response.data.modo,
+            versao: response.data.versao,
+            frases_disponiveis: response.data.frases_disponiveis
+        });
+    } catch (error) {
+        res.json({
+            yolo_service: 'offline',
+            modo: 'simulacao_local',
+            fallback: true
+        });
+    }
+});
+
 // ========== ROTAS DE MENSAGENS ==========
 app.post('/api/messages', authenticateToken, async (req, res) => {
     try { const { content, room, recipient } = req.body; const message = new Message({ content, room: room || 'geral', sender: req.userId, senderName: req.user.name, recipient }); await message.save(); io.emit('new-message', { ...message.toJSON(), timestamp: new Date() }); res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message }); }
