@@ -71,6 +71,11 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ========== SERVIDOR HTTP E SOCKET ==========
 const server = http.createServer(app);
+
+// Configuração para manter conexões ativas no Render
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 120000;
+
 const io = socketService.initSocket(server);
 app.set('io', io);
 
