@@ -37,7 +37,8 @@ const limiter = rateLimit({
 if (isProduction) app.use('/api', limiter);
 
 const allowedOrigins = [
-    'https://frontend-sustentabilidade.vercel.app',
+    'https://ecoroute.vercel.app',
+    'https://ecoroute-git-master.vercel.app',  // Seu preview URL
     'http://localhost:3000',
     'http://localhost:3001',
     'http://localhost:3002',
@@ -47,10 +48,16 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function (origin, callback) {
+        // Permite requisições sem origin (ex: mobile apps)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1 || origin.match(/https:\/\/.*\.vercel\.app$/)) {
+        
+        // Verifica se é uma origem permitida ou se é do Vercel
+        if (allowedOrigins.indexOf(origin) !== -1 || 
+            origin.match(/https:\/\/.*\.vercel\.app$/) ||      // Qualquer preview do Vercel
+            origin === 'https://ecoroute.vercel.app') {        // Seu domínio principal
             callback(null, true);
         } else {
+            console.log(`❌ CORS bloqueou origem: ${origin}`);
             callback(new Error('Not allowed by CORS'));
         }
     },
