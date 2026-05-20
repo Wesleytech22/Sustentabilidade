@@ -37,8 +37,7 @@ const limiter = rateLimit({
 if (isProduction) app.use('/api', limiter);
 
 const allowedOrigins = [
-    'https://ecoroute.vercel.app',
-    'https://ecoroute-git-master.vercel.app',  // Seu preview URL
+    'https://ecoroutes-eta.vercel.app',  // Seu preview URL
     'http://localhost:3000',
     'http://localhost:3001',
     'http://localhost:3002',
