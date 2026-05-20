@@ -2,74 +2,174 @@
 const nodemailer = require('nodemailer');
 
 let transporter = null;
+let connectionError = null;
 
-// Função para criar transporter apenas quando necessário
+/**
+ * Verifica se o email é válido
+ */
+const isValidEmail = (email) => {
+    if (!email || typeof email !== 'string') return false;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+};
+
+/**
+ * Obtém ou cria o transporter
+ */
 const getTransporter = () => {
+    // Se já temos um transporter funcionando, retorna ele
     if (transporter) return transporter;
     
-    // Verificar se as credenciais existem
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        console.error('❌ Credenciais de email não configuradas no .env');
+    // Se houve erro de conexão anterior, não tenta novamente
+    if (connectionError) {
+        console.error('❌ Transporter já falhou anteriormente:', connectionError);
+        return null;
+    }
+    
+    // Verifica credenciais
+    const emailUser = process.env.EMAIL_USER;
+    const emailPass = process.env.EMAIL_PASS;
+    
+    if (!emailUser || !emailPass) {
+        connectionError = 'Credenciais de email não configuradas no .env';
+        console.error('❌', connectionError);
+        return null;
+    }
+    
+    if (!isValidEmail(emailUser)) {
+        connectionError = `Email inválido: ${emailUser}`;
+        console.error('❌', connectionError);
         return null;
     }
     
     console.log('📧 Configurando serviço de email...');
-    console.log('  📧 EMAIL_USER:', process.env.EMAIL_USER);
-    console.log('  📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ configurada' : '❌ não configurada');
+    console.log(`  📧 Servidor: ${process.env.EMAIL_HOST}:${process.env.EMAIL_PORT}`);
+    console.log(`  📧 Usuário: ${emailUser}`);
+    console.log(`  📧 Senha: ${'*'.repeat(emailPass.length)}`);
     
-    transporter = nodemailer.createTransport({
-        host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-        port: parseInt(process.env.EMAIL_PORT) || 587,
-        secure: false, // true para 465, false para 587
-        auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS
-        },
-        tls: {
-            rejectUnauthorized: false // apenas para desenvolvimento
-        },
-        debug: false // Coloque true para ver logs detalhados
-    });
-    
-    return transporter;
+    try {
+        // Configuração otimizada para Gmail
+        transporter = nodemailer.createTransport({
+            host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+            port: parseInt(process.env.EMAIL_PORT) || 587,
+            secure: process.env.EMAIL_SECURE === 'true' || false,
+            auth: {
+                user: emailUser,
+                pass: emailPass
+            },
+            tls: {
+                rejectUnauthorized: false,
+                ciphers: 'SSLv3'
+            },
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 10000,
+        });
+        
+        // Testa a conexão
+        transporter.verify((error, success) => {
+            if (error) {
+                console.error('❌ Falha na verificação do transporter:', error.message);
+                connectionError = error.message;
+                transporter = null;
+                
+                if (error.code === 'EAUTH') {
+                    console.error('\n🔧 SOLUÇÃO PARA ERRO EAUTH:');
+                    console.error('   1. Acesse: https://myaccount.google.com/apppasswords');
+                    console.error('   2. Gere uma NOVA senha de app');
+                    console.error('   3. Atualize o EMAIL_PASS no arquivo .env');
+                    console.error('   4. Reinicie a aplicação\n');
+                }
+            } else {
+                console.log('✅ Serviço de email configurado com sucesso!');
+                connectionError = null;
+            }
+        });
+        
+        return transporter;
+        
+    } catch (error) {
+        console.error('❌ Erro ao criar transporter:', error.message);
+        connectionError = error.message;
+        transporter = null;
+        return null;
+    }
 };
 
 /**
- * Enviar email de boas-vindas
+ * Envia email de boas-vindas
  */
 const sendWelcomeEmail = async (to, name) => {
     try {
-        console.log(`📧 Tentando enviar email de boas-vindas para: ${to}`);
+        console.log(`\n📧 [WELCOME] Enviando email para: ${to}`);
         
-        const transporter = getTransporter();
-        if (!transporter) {
-            console.log('⚠️ Email não enviado: credenciais não configuradas');
-            return { success: false, error: 'Email não configurado' };
+        // Validações
+        if (!isValidEmail(to)) {
+            throw new Error(`Email inválido: ${to}`);
         }
         
-        // Verificar se o email é válido
-        if (!to || !to.includes('@')) {
-            console.error('❌ Email inválido:', to);
-            return { success: false, error: 'Email inválido' };
+        const transporterInstance = getTransporter();
+        if (!transporterInstance) {
+            throw new Error(connectionError || 'Serviço de email indisponível');
         }
         
         const mailOptions = {
-            from: process.env.EMAIL_FROM || '"EcoRoute" <noreply@ecoroute.com>',
-            to: to,
-            subject: 'Bem-vindo ao EcoRoute! 🌱',
+            from: process.env.EMAIL_FROM || `"EcoRoute" <${process.env.EMAIL_USER}>`,
+            to: to.trim().toLowerCase(),
+            subject: '🎉 Bem-vindo ao EcoRoute - Sua conta foi criada!',
             html: `
                 <!DOCTYPE html>
                 <html>
                 <head>
-                    <meta charset="utf-8">
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <style>
-                        body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f4f4f4; }
-                        .container { max-width: 600px; margin: 20px auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-                        .header { background: linear-gradient(135deg, #4CAF50, #45a049); color: white; padding: 40px 20px; text-align: center; }
-                        .header h1 { margin: 0; font-size: 32px; }
-                        .content { padding: 40px 30px; }
-                        .btn { display: inline-block; padding: 12px 30px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: 500; }
-                        .footer { text-align: center; padding: 20px; background: #f9f9f9; color: #999; font-size: 12px; }
+                        body {
+                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                            line-height: 1.6;
+                            color: #333;
+                            margin: 0;
+                            padding: 0;
+                            background-color: #f4f4f4;
+                        }
+                        .container {
+                            max-width: 600px;
+                            margin: 20px auto;
+                            background-color: #ffffff;
+                            border-radius: 10px;
+                            overflow: hidden;
+                            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                        }
+                        .header {
+                            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+                            color: white;
+                            padding: 30px;
+                            text-align: center;
+                        }
+                        .header h1 {
+                            margin: 0;
+                            font-size: 28px;
+                        }
+                        .content {
+                            padding: 30px;
+                        }
+                        .button {
+                            display: inline-block;
+                            padding: 12px 30px;
+                            background-color: #4CAF50;
+                            color: white;
+                            text-decoration: none;
+                            border-radius: 5px;
+                            margin: 20px 0;
+                            font-weight: bold;
+                        }
+                        .footer {
+                            background-color: #f9f9f9;
+                            padding: 20px;
+                            text-align: center;
+                            font-size: 12px;
+                            color: #999;
+                        }
                     </style>
                 </head>
                 <body>
@@ -79,8 +179,8 @@ const sendWelcomeEmail = async (to, name) => {
                             <p>Logística Reversa Sustentável</p>
                         </div>
                         <div class="content">
-                            <h2>Olá ${name}!</h2>
-                            <p>Seja muito bem-vindo ao EcoRoute! 🎉</p>
+                            <h2>Olá ${name || 'Usuário'}! 👋</h2>
+                            <p>Seja muito bem-vindo ao <strong>EcoRoute</strong>!</p>
                             <p>Sua conta foi criada com sucesso. Agora você pode:</p>
                             <ul>
                                 <li>✅ Gerenciar pontos de coleta</li>
@@ -88,9 +188,12 @@ const sendWelcomeEmail = async (to, name) => {
                                 <li>✅ Calcular impacto ambiental</li>
                                 <li>✅ Conectar-se com outras cooperativas</li>
                             </ul>
-                            <p style="text-align: center; margin-top: 30px;">
-                                <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard" class="btn">Acessar Dashboard</a>
-                            </p>
+                            <div style="text-align: center;">
+                                <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard" class="button">
+                                    Acessar Dashboard
+                                </a>
+                            </div>
+                            <p style="margin-top: 20px;">Estamos felizes em ter você conosco nesta jornada sustentável!</p>
                         </div>
                         <div class="footer">
                             <p>© ${new Date().getFullYear()} EcoRoute. Todos os direitos reservados.</p>
@@ -100,77 +203,155 @@ const sendWelcomeEmail = async (to, name) => {
                 </body>
                 </html>
             `,
-            text: `Olá ${name}! Seja bem-vindo ao EcoRoute. Sua conta foi criada com sucesso. Acesse o dashboard: ${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard`
+            text: `Olá ${name || 'Usuário'}!\n\nBem-vindo ao EcoRoute! Sua conta foi criada com sucesso.\n\nAcesse o dashboard: ${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard\n\n🌱 EcoRoute - Logística Reversa Sustentável`
         };
-
-        const info = await transporter.sendMail(mailOptions);
+        
+        const info = await transporterInstance.sendMail(mailOptions);
         console.log('✅ Email de boas-vindas enviado com sucesso!');
-        console.log('  📧 Para:', to);
-        console.log('  📧 Message ID:', info.messageId);
-        return { success: true, messageId: info.messageId };
+        console.log(`  📧 Message ID: ${info.messageId}`);
+        console.log(`  📧 Response: ${info.response}`);
+        
+        return { 
+            success: true, 
+            messageId: info.messageId,
+            response: info.response
+        };
+        
     } catch (error) {
-        console.error('❌ Erro ao enviar email de boas-vindas:');
-        console.error('  📧 Erro:', error.message);
-        return { success: false, error: error.message };
+        console.error('❌ Erro ao enviar email de boas-vindas:', error.message);
+        return { 
+            success: false, 
+            error: error.message,
+            code: error.code || 'UNKNOWN'
+        };
     }
 };
 
 /**
- * Enviar código de verificação
+ * Envia código de verificação
  */
 const sendVerificationCode = async (to, name, code) => {
     try {
-        console.log(`📧 Tentando enviar código de verificação para: ${to}`);
+        console.log(`\n📧 [VERIFY] Enviando código para: ${to}`);
         
-        const transporter = getTransporter();
-        if (!transporter) {
-            console.log('⚠️ Código não enviado: credenciais não configuradas');
-            return { success: false, error: 'Email não configurado' };
+        if (!isValidEmail(to)) {
+            throw new Error(`Email inválido: ${to}`);
+        }
+        
+        if (!code || code.length < 4) {
+            throw new Error('Código inválido');
+        }
+        
+        const transporterInstance = getTransporter();
+        if (!transporterInstance) {
+            throw new Error(connectionError || 'Serviço de email indisponível');
         }
         
         const mailOptions = {
-            from: process.env.EMAIL_FROM || '"EcoRoute" <noreply@ecoroute.com>',
-            to: to,
-            subject: 'Código de Verificação - EcoRoute',
+            from: process.env.EMAIL_FROM || `"EcoRoute" <${process.env.EMAIL_USER}>`,
+            to: to.trim().toLowerCase(),
+            subject: '🔐 Código de Verificação - EcoRoute',
             html: `
                 <!DOCTYPE html>
                 <html>
                 <head>
+                    <meta charset="UTF-8">
                     <style>
-                        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                        .container { max-width: 600px; margin: 0 auto; padding: 20px; background: #f9f9f9; border-radius: 10px; }
-                        .code { font-size: 48px; font-weight: bold; color: #4CAF50; text-align: center; padding: 20px; background: white; border-radius: 10px; margin: 20px 0; letter-spacing: 5px; border: 2px solid #4CAF50; }
+                        body {
+                            font-family: 'Segoe UI', Arial, sans-serif;
+                            line-height: 1.6;
+                            color: #333;
+                        }
+                        .container {
+                            max-width: 500px;
+                            margin: 0 auto;
+                            padding: 20px;
+                            background: #f9f9f9;
+                            border-radius: 10px;
+                        }
+                        .code {
+                            font-size: 42px;
+                            font-weight: bold;
+                            color: #4CAF50;
+                            text-align: center;
+                            padding: 20px;
+                            background: white;
+                            border-radius: 10px;
+                            margin: 20px 0;
+                            letter-spacing: 8px;
+                            border: 2px solid #4CAF50;
+                            font-family: monospace;
+                        }
+                        .warning {
+                            color: #ff9800;
+                            font-size: 14px;
+                            text-align: center;
+                        }
                     </style>
                 </head>
                 <body>
                     <div class="container">
-                        <h2>Olá ${name}!</h2>
-                        <p>Você solicitou um código de verificação para sua conta no EcoRoute.</p>
+                        <h2>Olá ${name || 'Usuário'}!</h2>
+                        <p>Você solicitou um código de verificação para sua conta no <strong>EcoRoute</strong>.</p>
                         <div class="code">${code}</div>
                         <p>Este código é válido por <strong>10 minutos</strong>.</p>
-                        <p>Se você não solicitou este código, ignore este email.</p>
+                        <p class="warning">⚠️ Se você não solicitou este código, ignore este email.</p>
+                        <hr>
+                        <p style="font-size: 12px; color: #999;">EcoRoute - Logística Reversa Sustentável</p>
                     </div>
                 </body>
                 </html>
             `,
-            text: `Olá ${name}! Seu código de verificação é: ${code}. Válido por 10 minutos.`
+            text: `Olá ${name || 'Usuário'}!\n\nSeu código de verificação é: ${code}\n\nEste código é válido por 10 minutos.\n\nSe você não solicitou este código, ignore este email.\n\n🌱 EcoRoute`
         };
-
-        const info = await transporter.sendMail(mailOptions);
+        
+        const info = await transporterInstance.sendMail(mailOptions);
         console.log('✅ Código de verificação enviado com sucesso!');
-        console.log('  📧 Para:', to);
-        console.log('  📧 Message ID:', info.messageId);
-        return { success: true, messageId: info.messageId };
+        console.log(`  📧 Message ID: ${info.messageId}`);
+        
+        return { 
+            success: true, 
+            messageId: info.messageId,
+            code: code 
+        };
+        
     } catch (error) {
-        console.error('❌ Erro ao enviar código de verificação:');
-        console.error('  📧 Erro:', error.message);
-        return { success: false, error: error.message };
+        console.error('❌ Erro ao enviar código de verificação:', error.message);
+        return { 
+            success: false, 
+            error: error.message,
+            code: error.code || 'UNKNOWN'
+        };
     }
 };
 
-console.log('📧 Serviço de email carregado (aguardando uso)');
+/**
+ * Testa a conexão de email
+ */
+const testEmailConnection = async () => {
+    console.log('\n🧪 Testando conexão de email...');
+    const transporter = getTransporter();
+    
+    if (!transporter) {
+        console.error('❌ Falha ao criar transporter');
+        return false;
+    }
+    
+    try {
+        await transporter.verify();
+        console.log('✅ Conexão com servidor de email OK');
+        return true;
+    } catch (error) {
+        console.error('❌ Falha na conexão:', error.message);
+        return false;
+    }
+};
+
+console.log('📧 Serviço de email carregado e pronto para uso');
 
 module.exports = {
     sendWelcomeEmail,
-    sendVerificationCode
+    sendVerificationCode,
+    testEmailConnection,
+    isValidEmail
 };
