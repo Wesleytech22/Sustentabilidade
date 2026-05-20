@@ -1108,39 +1108,84 @@ app.get('/api/events/external/search', authenticateToken, async (req, res) => {
     try {
         const { keyword, city, size = 20 } = req.query;
         console.log('🔍 Buscando eventos:', { keyword, city });
+
         const ticketmasterApiKey = process.env.TICKETMASTER_API_KEY;
+
         if (!ticketmasterApiKey) {
             console.error('❌ TICKETMASTER_API_KEY não configurada');
-            return res.status(500).json({ error: 'API do Ticketmaster não configurada', events: [], total: 0 });
+            return res.status(500).json({
+                success: false,
+                error: 'API do Ticketmaster não configurada',
+                events: [],
+                total: 0
+            });
         }
+
         let url = `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${ticketmasterApiKey}&countryCode=BR&size=${size}&sort=date,asc`;
         if (keyword) url += `&keyword=${encodeURIComponent(keyword)}`;
         if (city) url += `&city=${encodeURIComponent(city)}`;
+
         const response = await axios.get(url, { timeout: 15000 });
+
         if (response.data._embedded && response.data._embedded.events) {
             const events = response.data._embedded.events.map(event => {
                 const venue = event._embedded?.venues?.[0];
                 const classification = event.classifications?.[0]?.segment?.name || '';
                 let expectedAttendees = 5000, estimatedWaste = 2500;
-                if (classification === 'Sports') { expectedAttendees = 20000; estimatedWaste = 10000; }
-                else if (classification === 'Music') { expectedAttendees = 8000; estimatedWaste = 4000; }
-                else if (classification === 'Arts & Theatre') { expectedAttendees = 2000; estimatedWaste = 1000; }
+
+                if (classification === 'Sports') {
+                    expectedAttendees = 20000;
+                    estimatedWaste = 10000;
+                } else if (classification === 'Music') {
+                    expectedAttendees = 8000;
+                    estimatedWaste = 4000;
+                } else if (classification === 'Arts & Theatre') {
+                    expectedAttendees = 2000;
+                    estimatedWaste = 1000;
+                }
+
                 return {
-                    externalId: event.id, name: event.name, description: event.info || event.description || '',
+                    externalId: event.id,
+                    name: event.name,
+                    description: event.info || event.description || '',
                     startDate: event.dates?.start?.localDate || new Date().toISOString().split('T')[0],
                     endDate: event.dates?.end?.localDate || event.dates?.start?.localDate || new Date().toISOString().split('T')[0],
-                    venueName: venue?.name || '', address: venue?.address?.line1 || '', city: venue?.city?.name || '',
-                    state: venue?.state?.stateCode || '', zipCode: venue?.postalCode || '',
-                    imageUrl: event.images?.[0]?.url || '', eventUrl: event.url || '',
-                    classification: classification, expectedAttendees: expectedAttendees, estimatedWaste: estimatedWaste
+                    venueName: venue?.name || '',
+                    address: venue?.address?.line1 || '',
+                    city: venue?.city?.name || '',
+                    state: venue?.state?.stateCode || '',
+                    zipCode: venue?.postalCode || '',
+                    imageUrl: event.images?.[0]?.url || '',
+                    eventUrl: event.url || '',
+                    classification: classification,
+                    expectedAttendees: expectedAttendees,
+                    estimatedWaste: estimatedWaste
                 };
             });
+
             console.log(`✅ Encontrados ${events.length} eventos`);
-            res.json({ events, total: events.length });
-        } else { res.json({ events: [], total: 0 }); }
+
+            // CORREÇÃO: Adicionado success: true
+            res.json({
+                success: true,
+                events: events,
+                total: events.length
+            });
+        } else {
+            res.json({
+                success: true,
+                events: [],
+                total: 0
+            });
+        }
     } catch (error) {
         console.error('❌ Erro ao buscar eventos:', error.message);
-        res.status(500).json({ error: `Erro ao buscar eventos: ${error.message}`, events: [], total: 0 });
+        res.status(500).json({
+            success: false,
+            error: `Erro ao buscar eventos: ${error.message}`,
+            events: [],
+            total: 0
+        });
     }
 });
 
@@ -1798,12 +1843,62 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
         const { eventId } = req.params;
         const eventData = req.body;
 
-        console.log('📌 Importando evento externo:', eventId);
-        console.log('📦 Evento:', eventData.name);
+        console.log('=========================================');
+        console.log('📌 IMPORTANDO EVENTO EXTERNO');
+        console.log('📌 eventId:', eventId);
+        console.log('📌 eventData:', JSON.stringify(eventData, null, 2));
+        console.log('=========================================');
+
+        // VALIDAÇÕES INICIAIS
+        if (!eventId || eventId === 'undefined' || eventId === 'null') {
+            console.error('❌ eventId inválido');
+            return res.status(400).json({ error: 'ID do evento é obrigatório' });
+        }
+
+        if (!eventData.name) {
+            console.error('❌ Nome do evento não informado');
+            return res.status(400).json({ error: 'Nome do evento é obrigatório' });
+        }
+
+        if (!eventData.startDate) {
+            console.error('❌ Data de início não informada');
+            return res.status(400).json({ error: 'Data de início é obrigatória' });
+        }
+
+        // CONVERTER DATAS CORRETAMENTE
+        let startDate, endDate;
+        try {
+            // Se a data vier no formato ISO (YYYY-MM-DD)
+            if (eventData.startDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                startDate = new Date(eventData.startDate + 'T00:00:00-03:00');
+            } else {
+                startDate = new Date(eventData.startDate);
+            }
+
+            const endDateStr = eventData.endDate || eventData.startDate;
+            if (endDateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                endDate = new Date(endDateStr + 'T23:59:59-03:00');
+            } else {
+                endDate = new Date(endDateStr);
+            }
+
+            if (isNaN(startDate.getTime())) {
+                throw new Error(`Data de início inválida: ${eventData.startDate}`);
+            }
+            if (isNaN(endDate.getTime())) {
+                throw new Error(`Data de fim inválida: ${endDateStr}`);
+            }
+
+            console.log('📅 Datas convertidas:', { startDate, endDate });
+        } catch (dateError) {
+            console.error('❌ Erro ao converter datas:', dateError.message);
+            return res.status(400).json({ error: `Erro nas datas: ${dateError.message}` });
+        }
 
         // Verificar se evento já foi importado
         const existingEvent = await Event.findOne({ externalId: eventId, userId: req.userId });
         if (existingEvent) {
+            console.log('⚠️ Evento já importado anteriormente');
             return res.status(400).json({ error: 'Este evento já foi importado anteriormente' });
         }
 
@@ -1814,6 +1909,8 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
         let city = eventData.city || 'Cotia';
         let state = eventData.state || 'SP';
         let zipCode = eventData.zipCode || '';
+
+        console.log('🔍 Buscando coordenadas para:', { address, city, state, zipCode });
 
         if (zipCode) {
             const geoResult = await getCoordinatesByZipCode(zipCode);
@@ -1848,7 +1945,7 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
         if (!latitude || !longitude) {
             latitude = -23.6022;
             longitude = -46.9194;
-            console.log(`⚠️ Usando coordenadas padrão (Cotia)`);
+            console.log(`⚠️ Usando coordenadas padrão (Cotia): ${latitude}, ${longitude}`);
         }
 
         const locationObj = {
@@ -1862,6 +1959,15 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
         if (classification === 'Music') eventType = 'show';
         else if (classification === 'Sports') eventType = 'evento_esportivo';
 
+        console.log('📝 Criando evento com os dados:');
+        console.log('  - name:', eventData.name);
+        console.log('  - type:', eventType);
+        console.log('  - address:', address);
+        console.log('  - city:', city);
+        console.log('  - state:', state);
+        console.log('  - startDate:', startDate);
+        console.log('  - endDate:', endDate);
+
         // Criar evento com NOVOS CAMPOS
         const event = new Event({
             name: eventData.name,
@@ -1874,14 +1980,15 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
             location: locationObj,
             latitude: latitude,
             longitude: longitude,
-            startDate: new Date(eventData.startDate),
-            endDate: new Date(eventData.endDate || eventData.startDate),
-            expectedAttendees: eventData.expectedAttendees || 5000,
-            estimatedWaste: eventData.estimatedWaste || 2500,
+            startDate: startDate,
+            endDate: endDate,
+            expectedAttendees: Number(eventData.expectedAttendees) || 5000,
+            estimatedWaste: Number(eventData.estimatedWaste) || 2500,
+            wasteCollected: 0,
             status: 'planejado',
-            venueName: eventData.venueName,
-            imageUrl: eventData.imageUrl,
-            eventUrl: eventData.eventUrl,
+            venueName: eventData.venueName || '',
+            imageUrl: eventData.imageUrl || '',
+            eventUrl: eventData.eventUrl || '',
             externalId: eventId,
             source: 'ticketmaster',
             userId: req.userId,
@@ -1893,7 +2000,7 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
         });
 
         await event.save();
-        console.log(`✅ Evento criado: ${event.name}`);
+        console.log(`✅ Evento criado: ${event.name} (ID: ${event._id})`);
 
         // Criar ponto de coleta
         const point = new CollectionPoint({
@@ -1959,6 +2066,9 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
         event.scheduledCollectionDate = routeDate;
         await event.save();
 
+        console.log('✅ IMPORTAÇÃO CONCLUÍDA COM SUCESSO!');
+        console.log('=========================================');
+
         res.status(201).json({
             success: true,
             message: `Evento "${event.name}" importado com sucesso!`,
@@ -1980,7 +2090,16 @@ app.post('/api/events/external/import/:eventId', authenticateToken, async (req, 
 
     } catch (error) {
         console.error('❌ Erro ao importar evento:', error);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Stack:', error.stack);
+
+        // Enviar erro detalhado
+        res.status(500).json({
+            error: error.message,
+            details: error.errors ? Object.keys(error.errors).map(key => ({
+                field: key,
+                message: error.errors[key].message
+            })) : null
+        });
     }
 });
 
