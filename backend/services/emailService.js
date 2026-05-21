@@ -49,23 +49,23 @@ const getTransporter = () => {
 
     try {
         transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.EMAIL_PORT) || 465,  // 👈 MUDE PARA 465
-    secure: process.env.EMAIL_SECURE === 'true' || true,  // 👈 MUDE PARA true
-    auth: {
-        user: emailUser,
-        pass: emailPass
-    },
-    family: 4,  // 👈 FORÇA IPv4
-    tls: {
-        rejectUnauthorized: false,
-        ciphers: 'SSLv3'
-    },
-    connectionTimeout: 60000,  // 👈 AUMENTE PARA 60s
-    greetingTimeout: 60000,
-    socketTimeout: 60000,
-    debug: false
-});
+            host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+            port: parseInt(process.env.EMAIL_PORT) || 465,
+            secure: process.env.EMAIL_SECURE === 'true' || true,
+            auth: {
+                user: emailUser,
+                pass: emailPass
+            },
+            family: 4,
+            tls: {
+                rejectUnauthorized: false,
+                ciphers: 'SSLv3'
+            },
+            connectionTimeout: 60000,
+            greetingTimeout: 60000,
+            socketTimeout: 60000,
+            debug: false
+        });
 
         transporter.verify((error, success) => {
             if (error) {
