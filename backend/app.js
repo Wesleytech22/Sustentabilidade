@@ -30,7 +30,13 @@ app.use(compression());
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: 500, // aumentar o limite
+    keyGenerator: (req) => {
+        // usar o IP real do usuário, não o IP do Vercel
+        return req.headers['x-forwarded-for']?.split(',')[0] 
+            || req.headers['x-real-ip'] 
+            || req.ip;
+    },
     message: { error: 'Muitas requisições deste IP, tente novamente após 15 minutos' }
 });
 
