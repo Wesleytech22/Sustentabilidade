@@ -30,14 +30,13 @@ app.use(compression());
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 500, // aumentar o limite
+    limit: 100,  // 👈 use 'limit' em vez de 'max' (versão mais nova)
+    message: { error: 'Muitas requisições deste IP, tente novamente após 15 minutos' },
     keyGenerator: (req) => {
-        // usar o IP real do usuário, não o IP do Vercel
-        return req.headers['x-forwarded-for']?.split(',')[0] 
-            || req.headers['x-real-ip'] 
-            || req.ip;
-    },
-    message: { error: 'Muitas requisições deste IP, tente novamente após 15 minutos' }
+        // Corrige o problema de IPv6
+        const ip = req.ip || req.socket.remoteAddress;
+        return ip.replace(/:\d+[^:]*$/, ''); // Remove porta se existir
+    }
 });
 
 if (isProduction) app.use('/api', limiter);
