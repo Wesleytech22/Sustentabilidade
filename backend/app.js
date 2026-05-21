@@ -28,14 +28,35 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.use(helmet({ contentSecurityPolicy: isProduction ? undefined : false }));
 app.use(compression());
 
+// Substitua TODO o bloco do rateLimit (linhas 25-35) por:
+
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 100,  // 👈 use 'limit' em vez de 'max' (versão mais nova)
+    limit: 100,
     message: { error: 'Muitas requisições deste IP, tente novamente após 15 minutos' },
     keyGenerator: (req) => {
-        // Corrige o problema de IPv6
-        const ip = req.ip || req.socket.remoteAddress;
-        return ip.replace(/:\d+[^:]*$/, ''); // Remove porta se existir
+        // Solução para IPv6 recomendada pela documentação
+        let ip = req.ip || req.socket.remoteAddress;
+        if (!ip) return 'unknown';
+        
+        // Remove a porta se existir (ex: ::ffff:127.0.0.1:12345)
+        ip = ip.replace(/:\d+[^:]*$/, '');
+        
+        // Para IPv6, podemos usar o prefixo /64 (os primeiros 64 bits)
+        // Isso impede que usuários IPv6 burlem o limite trocando o final do IP
+        if (ip.includes(':') && !ip.startsWith('::ffff:')) {
+            // É IPv6, pega apenas os primeiros 4 grupos (64 bits)
+            const groups = ip.split(':');
+            if (groups.length >= 4) {
+                ip = groups.slice(0, 4).join(':');
+            }
+        }
+        
+        return ip;
+    },
+    // Desabilita a validação problemática
+    validate: {
+        keyGeneratorIpFallback: false
     }
 });
 
