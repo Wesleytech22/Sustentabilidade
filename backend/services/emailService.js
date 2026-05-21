@@ -19,34 +19,34 @@ const isValidEmail = (email) => {
 const getTransporter = () => {
     // Se já temos um transporter funcionando, retorna ele
     if (transporter) return transporter;
-    
+
     // Se houve erro de conexão anterior, não tenta novamente
     if (connectionError) {
         console.error('❌ Transporter já falhou anteriormente:', connectionError);
         return null;
     }
-    
+
     // Verifica credenciais
     const emailUser = process.env.EMAIL_USER;
     const emailPass = process.env.EMAIL_PASS;
-    
+
     if (!emailUser || !emailPass) {
         connectionError = 'Credenciais de email não configuradas no .env';
         console.error('❌', connectionError);
         return null;
     }
-    
+
     if (!isValidEmail(emailUser)) {
         connectionError = `Email inválido: ${emailUser}`;
         console.error('❌', connectionError);
         return null;
     }
-    
+
     console.log('📧 Configurando serviço de email...');
     console.log(`  📧 Servidor: ${process.env.EMAIL_HOST}:${process.env.EMAIL_PORT}`);
     console.log(`  📧 Usuário: ${emailUser}`);
     console.log(`  📧 Senha: ${'*'.repeat(emailPass.length)}`);
-    
+
     try {
         transporter = nodemailer.createTransport({
             host: process.env.EMAIL_HOST || 'smtp.gmail.com',
@@ -66,13 +66,13 @@ const getTransporter = () => {
             socketTimeout: 30000,
             debug: false
         });
-        
+
         transporter.verify((error, success) => {
             if (error) {
                 console.error('❌ Falha na verificação do transporter:', error.message);
                 connectionError = error.message;
                 transporter = null;
-                
+
                 if (error.code === 'EAUTH') {
                     console.error('\n🔧 SOLUÇÃO PARA ERRO EAUTH:');
                     console.error('   1. Acesse: https://myaccount.google.com/apppasswords');
@@ -89,9 +89,9 @@ const getTransporter = () => {
                 connectionError = null;
             }
         });
-        
+
         return transporter;
-        
+
     } catch (error) {
         console.error('❌ Erro ao criar transporter:', error.message);
         connectionError = error.message;
@@ -106,17 +106,20 @@ const getTransporter = () => {
 const sendWelcomeEmail = async (to, name) => {
     try {
         console.log(`\n📧 [WELCOME] Enviando email para: ${to}`);
-        
+
         // Validações
         if (!isValidEmail(to)) {
             throw new Error(`Email inválido: ${to}`);
         }
-        
+
+        console.log('📧 Obtendo transporter...');
         const transporterInstance = getTransporter();
         if (!transporterInstance) {
             throw new Error(connectionError || 'Serviço de email indisponível');
         }
-        
+
+        console.log('📧 Transporter obtido, preparando email...');
+
         const mailOptions = {
             from: process.env.EMAIL_FROM || `"EcoRoute" <${process.env.EMAIL_USER}>`,
             to: to.trim().toLowerCase(),
@@ -209,22 +212,28 @@ const sendWelcomeEmail = async (to, name) => {
             `,
             text: `Olá ${name || 'Usuário'}!\n\nBem-vindo ao EcoRoute! Sua conta foi criada com sucesso.\n\nAcesse o dashboard: ${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard\n\n🌱 EcoRoute - Logística Reversa Sustentável`
         };
-        
+
+        console.log('📧 Enviando email... (pode levar alguns segundos)');
         const info = await transporterInstance.sendMail(mailOptions);
         console.log('✅ Email de boas-vindas enviado com sucesso!');
         console.log(`  📧 Message ID: ${info.messageId}`);
         console.log(`  📧 Response: ${info.response}`);
-        
-        return { 
-            success: true, 
+
+        return {
+            success: true,
             messageId: info.messageId,
             response: info.response
         };
-        
+
     } catch (error) {
-        console.error('❌ Erro ao enviar email de boas-vindas:', error.message);
-        return { 
-            success: false, 
+        console.error('❌ ERRO DETALHADO AO ENVIAR EMAIL:');
+        console.error(`  Mensagem: ${error.message}`);
+        console.error(`  Código: ${error.code || 'UNKNOWN'}`);
+        if (error.response) console.error(`  Resposta: ${error.response}`);
+        if (error.stack) console.error(`  Stack: ${error.stack}`);
+
+        return {
+            success: false,
             error: error.message,
             code: error.code || 'UNKNOWN'
         };
@@ -237,20 +246,20 @@ const sendWelcomeEmail = async (to, name) => {
 const sendVerificationCode = async (to, name, code) => {
     try {
         console.log(`\n📧 [VERIFY] Enviando código para: ${to}`);
-        
+
         if (!isValidEmail(to)) {
             throw new Error(`Email inválido: ${to}`);
         }
-        
+
         if (!code || code.length < 4) {
             throw new Error('Código inválido');
         }
-        
+
         const transporterInstance = getTransporter();
         if (!transporterInstance) {
             throw new Error(connectionError || 'Serviço de email indisponível');
         }
-        
+
         const mailOptions = {
             from: process.env.EMAIL_FROM || `"EcoRoute" <${process.env.EMAIL_USER}>`,
             to: to.trim().toLowerCase(),
@@ -308,21 +317,21 @@ const sendVerificationCode = async (to, name, code) => {
             `,
             text: `Olá ${name || 'Usuário'}!\n\nSeu código de verificação é: ${code}\n\nEste código é válido por 10 minutos.\n\nSe você não solicitou este código, ignore este email.\n\n🌱 EcoRoute`
         };
-        
+
         const info = await transporterInstance.sendMail(mailOptions);
         console.log('✅ Código de verificação enviado com sucesso!');
         console.log(`  📧 Message ID: ${info.messageId}`);
-        
-        return { 
-            success: true, 
+
+        return {
+            success: true,
             messageId: info.messageId,
-            code: code 
+            code: code
         };
-        
+
     } catch (error) {
         console.error('❌ Erro ao enviar código de verificação:', error.message);
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: error.message,
             code: error.code || 'UNKNOWN'
         };
@@ -335,12 +344,12 @@ const sendVerificationCode = async (to, name, code) => {
 const testEmailConnection = async () => {
     console.log('\n🧪 Testando conexão de email...');
     const transporter = getTransporter();
-    
+
     if (!transporter) {
         console.error('❌ Falha ao criar transporter');
         return false;
     }
-    
+
     try {
         await transporter.verify();
         console.log('✅ Conexão com servidor de email OK');
