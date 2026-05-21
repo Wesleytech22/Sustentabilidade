@@ -48,7 +48,6 @@ const getTransporter = () => {
     console.log(`  📧 Senha: ${'*'.repeat(emailPass.length)}`);
     
     try {
-        // Configuração otimizada para Gmail
         transporter = nodemailer.createTransport({
             host: process.env.EMAIL_HOST || 'smtp.gmail.com',
             port: parseInt(process.env.EMAIL_PORT) || 587,
@@ -57,16 +56,17 @@ const getTransporter = () => {
                 user: emailUser,
                 pass: emailPass
             },
+            family: 4,
             tls: {
                 rejectUnauthorized: false,
                 ciphers: 'SSLv3'
             },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 10000,
+            connectionTimeout: 30000,
+            greetingTimeout: 30000,
+            socketTimeout: 30000,
+            debug: false
         });
         
-        // Testa a conexão
         transporter.verify((error, success) => {
             if (error) {
                 console.error('❌ Falha na verificação do transporter:', error.message);
@@ -79,6 +79,10 @@ const getTransporter = () => {
                     console.error('   2. Gere uma NOVA senha de app');
                     console.error('   3. Atualize o EMAIL_PASS no arquivo .env');
                     console.error('   4. Reinicie a aplicação\n');
+                } else if (error.code === 'ENETUNREACH') {
+                    console.error('\n🔧 SOLUÇÃO PARA ERRO ENETUNREACH:');
+                    console.error('   A opção family: 4 foi adicionada para forçar IPv4');
+                    console.error('   Se o problema persistir, tente a porta 465 com SSL\n');
                 }
             } else {
                 console.log('✅ Serviço de email configurado com sucesso!');
