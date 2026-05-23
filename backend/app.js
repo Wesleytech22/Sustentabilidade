@@ -1,6 +1,9 @@
+// ⚠️ dotenv DEVE ser o primeiro — carrega .env antes de qualquer require de serviço
+const dotenv = require('dotenv');
+dotenv.config();
+
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -10,15 +13,12 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 const axios = require('axios');
 
-// Importar modelos e serviços
+// Importar modelos e serviços (após dotenv para garantir process.env disponível)
 const User = require('./src/models/User');
 const Message = require('./models/Message');
 const Notification = require('./models/Notification');
 const emailService = require('./services/emailService');
 const socketService = require('./services/socketService');
-
-// Carregar variáveis de ambiente
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -923,11 +923,10 @@ app.post('/api/routes/link-points', authenticateToken, async (req, res) => {
         const nextCollectionDate = getNextCollectionDate();
         const mainPointName = selectedPoints[0]?.name || 'Pontos de Coleta';
         const routeNameFinal = routeName || `${mainPointName} e mais ${selectedPoints.length - 1} pontos`;
-        let existingRoute = await Route.findOne({ userId: req.userId, source: 'points', status: 'PLANNED' });
-        let route;
         const routeData = { name: routeNameFinal, description: `Rota otimizada com ${selectedPoints.length} pontos de coleta. Distância total: ${optimized.totalDistance} km.`, date: nextCollectionDate, points: optimized.orderedPoints.map((p, idx) => ({ pointId: p._id, order: idx + 1, estimatedVolume: p.currentVolume || 500, actualVolume: 0, collectedAt: null })), totalDistance: optimized.totalDistance, totalWaste: optimized.totalWaste, fuelConsumption: optimized.fuelConsumption, carbonFootprint: optimized.carbonFootprint, status: 'PLANNED', source: 'points', userId: req.userId };
-        if (existingRoute) { Object.assign(existingRoute, routeData); await existingRoute.save(); route = existingRoute; console.log(`✅ Rota atualizada: ${routeNameFinal}`); }
-        else { route = new Route(routeData); await route.save(); console.log(`✅ Rota criada: ${routeNameFinal}`); }
+        const route = new Route(routeData);
+        await route.save();
+        console.log(`✅ Rota criada: ${routeNameFinal}`);
         res.json({ success: true, route: { id: route._id, name: route.name, points: route.points.length, totalDistance: route.totalDistance, totalWaste: route.totalWaste, fuelConsumption: route.fuelConsumption, date: route.date }, message: `Rota "${route.name}" criada/atualizada com ${selectedPoints.length} pontos! Distância: ${optimized.totalDistance} km` });
     } catch (error) { console.error('❌ Erro ao vincular pontos:', error); res.status(500).json({ error: error.message }); }
 });

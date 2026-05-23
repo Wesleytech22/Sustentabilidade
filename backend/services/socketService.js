@@ -5,6 +5,9 @@ const jwt = require('jsonwebtoken');
 const User = require('../src/models/User');
 const Message = require('../models/Message');
 
+// EcoBot
+const botService = require('./botService');
+
 let io;
 const onlineUsers = new Map(); // userId -> socketId
 const userSockets = new Map(); // socketId -> userId
@@ -523,6 +526,88 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ========== ECOBOT ==========
+
+  // Usuário inicia uma sessão com o EcoBot
+  socket.on('bot:start', () => {
+    try {
+      console.log(`🤖 bot:start — ${user.name} (${user._id})`);
+
+      // Encerra qualquer sessão anterior desse usuário
+      botService.endSession(user._id.toString());
+
+      const { message, room } = botService.startSession(user);
+
+      // Emite imediatamente — sem esperar o banco
+      socket.emit('bot:message', message);
+
+      // Persiste em background (fire-and-forget)
+      botService.persistMessage(room, message.content, user._id)
+        .catch(err => console.warn('⚠️ bot persist (start):', err.message));
+
+    } catch (err) {
+      console.error('❌ bot:start error:', err.message);
+      socket.emit('bot:message', botService.buildMessage(
+        'Desculpe, ocorreu um erro ao iniciar o assistente. Tente novamente.'
+      ));
+    }
+  });
+
+  // Usuário envia uma mensagem para o EcoBot
+  socket.on('bot:message', ({ input }) => {
+    try {
+      console.log(`🤖 bot:message — ${user.name}: "${input}"`);
+
+      const result = botService.processInput(user._id.toString(), input);
+
+      if (result.error) {
+        // Sessão não existe — tenta recriar automaticamente
+        const { message } = botService.startSession(user);
+        socket.emit('bot:message', message);
+        return;
+      }
+
+      // Emite a resposta imediatamente — sem esperar o banco
+      socket.emit('bot:message', result.message);
+
+      // Persiste em background (fire-and-forget)
+      botService.persistMessage(
+        botService.getRoom(user._id.toString()),
+        result.message.content,
+        user._id
+      ).catch(err => console.warn('⚠️ bot persist (msg):', err.message));
+
+      // Se for handoff, emite o evento especial depois de um breve delay
+      if (result.action === 'handoff') {
+        setTimeout(() => {
+          socket.emit('bot:handoff', { context: result.context });
+          botService.endSession(user._id.toString());
+        }, 1500);
+      }
+
+      // Se a conversa foi encerrada pelo bot, notifica o frontend
+      if (result.action === 'reply' && result.message.content.includes('Obrigado por usar')) {
+        setTimeout(() => {
+          socket.emit('bot:ended');
+          botService.endSession(user._id.toString());
+        }, 800);
+      }
+
+    } catch (err) {
+      console.error('❌ bot:message error:', err.message);
+      socket.emit('bot:message', botService.buildMessage(
+        'Desculpe, não consegui processar sua mensagem. Digite *menu* para recomeçar.'
+      ));
+    }
+  });
+
+  // Usuário fecha o bot manualmente
+  socket.on('bot:end', () => {
+    console.log(`🤖 bot:end — ${user.name} encerrou o bot`);
+    botService.endSession(user._id.toString());
+    socket.emit('bot:ended');
+  });
+
   // ========== EVENTO DE DESCONEXÃO ==========
   socket.on('disconnect', () => {
     console.log(`🔌 Desconectado: ${socket.id} - ${user.name}`);
@@ -531,6 +616,12 @@ io.on('connection', (socket) => {
     if (userId) {
       onlineUsers.delete(userId);
       userSockets.delete(socket.id);
+
+      // Encerrar sessão do bot se houver uma ativa
+      if (botService.getSession(userId)) {
+        botService.endSession(userId);
+        console.log(`🤖 Sessão do EcoBot encerrada para ${user.name}`);
+      }
 
       // Remover solicitações pendentes deste usuário
       for (const [reqId, req] of pendingSupportRequests) {
