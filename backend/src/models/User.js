@@ -26,6 +26,10 @@ const UserSchema = new mongoose.Schema({
         type: String,
         default: ''
     },
+    address: {
+        type: String,
+        default: ''
+    },
     city: {
         type: String,
         default: ''
@@ -33,6 +37,18 @@ const UserSchema = new mongoose.Schema({
     state: {
         type: String,
         default: ''
+    },
+    zipCode: {
+        type: String,
+        default: ''
+    },
+    latitude: {
+        type: Number,
+        default: null
+    },
+    longitude: {
+        type: Number,
+        default: null
     },
     active: {
         type: Boolean,

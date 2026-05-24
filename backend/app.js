@@ -19,6 +19,7 @@ const Message = require('./models/Message');
 const Notification = require('./models/Notification');
 const emailService = require('./services/emailService');
 const socketService = require('./services/socketService');
+const { emitToUser } = socketService;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -61,6 +62,15 @@ const limiter = rateLimit({
 });
 
 if (isProduction) app.use('/api', limiter);
+
+// Rate limiter específico para criação de eventos (máx 5 por usuário a cada 5 min)
+const eventCreationLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: 5,
+    keyGenerator: (req) => req.userId || req.ip || 'unknown',
+    message: { error: 'Muitos eventos criados. Aguarde alguns minutos antes de criar outro.' },
+    validate: { keyGeneratorIpFallback: false }
+});
 
 const allowedOrigins = [
     'https://ecoroutes-eta.vercel.app',  // Seu preview URL
@@ -207,6 +217,14 @@ const routeSchema = new mongoose.Schema({
     carbonFootprint: { type: Number, default: 0 },
     vehicleType: { type: String, default: 'truck' },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // Atribuição para logística
+    assignedTo:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    assignedAt:   { type: Date, default: null },
+    assignedByName: { type: String, default: '' },
+    // Endereço/coordenadas da cooperativa (para cálculo de distância pelo app de logística)
+    cooperativeLat: { type: Number, default: null },
+    cooperativeLng: { type: Number, default: null },
+    cooperativeAddress: { type: String, default: '' },
     completedAt: Date,
     source: { type: String, enum: ['points', 'events', 'manual'], default: 'manual' },
     eventsSummary: [{
@@ -235,6 +253,29 @@ const collectionSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 const Collection = mongoose.model('Collection', collectionSchema);
+
+// ========== MODELO DE SOLICITAÇÃO DE COLETA (EMPRESA → COOPERATIVA) ==========
+const collectionRequestSchema = new mongoose.Schema({
+    companyId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    companyName:  { type: String, required: true },
+    address:      { type: String, required: true },
+    city:         { type: String },
+    state:        { type: String },
+    zipCode:      { type: String },
+    wasteTypes:   [{ type: String }],
+    estimatedVolume: { type: Number, default: 0 },
+    scheduledDate:   { type: Date },
+    observations:    { type: String },
+    status: {
+        type: String,
+        enum: ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'],
+        default: 'pending'
+    },
+    routeId:  { type: mongoose.Schema.Types.ObjectId, ref: 'Route', default: null }
+}, { timestamps: true });
+collectionRequestSchema.index({ companyId: 1 });
+collectionRequestSchema.index({ status: 1 });
+const CollectionRequest = mongoose.model('CollectionRequest', collectionRequestSchema);
 
 // ========== MODELO DE EVENTO (ATUALIZADO COM NOVOS CAMPOS) ==========
 const eventSchema = new mongoose.Schema({
@@ -683,8 +724,13 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
 
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     try {
-        const { name, phone, city, state } = req.body;
-        const user = await User.findByIdAndUpdate(req.userId, { name, phone, city, state: state?.toUpperCase() }, { new: true, runValidators: true });
+        const { name, phone, city, state, address, zipCode, latitude, longitude } = req.body;
+        const updateData = { name, phone, city, state: state?.toUpperCase() };
+        if (address  !== undefined) updateData.address  = address;
+        if (zipCode  !== undefined) updateData.zipCode  = zipCode;
+        if (latitude  != null)     updateData.latitude  = Number(latitude);
+        if (longitude != null)     updateData.longitude = Number(longitude);
+        const user = await User.findByIdAndUpdate(req.userId, updateData, { new: true, runValidators: true });
         res.json({ user, message: 'Perfil atualizado com sucesso' });
     } catch (error) {
         res.status(500).json({ error: 'Erro ao atualizar perfil' });
@@ -745,12 +791,29 @@ app.post('/api/points', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/points', authenticateToken, async (req, res) => {
-    try { const points = await CollectionPoint.find({ userId: req.userId }).sort({ createdAt: -1 }); res.json(points); }
+    try {
+        const role = req.user?.role?.toUpperCase();
+        // Logística e motorista enxergam todos os pontos ativos (precisam navegar para coletar)
+        const filter = (role === 'LOGISTICS' || role === 'DRIVER')
+            ? { status: 'ACTIVE' }
+            : { userId: req.userId };
+        const points = await CollectionPoint.find(filter).sort({ createdAt: -1 });
+        res.json(points);
+    }
     catch (error) { console.error('❌ Erro ao listar pontos:', error); res.status(500).json({ error: 'Erro ao listar pontos' }); }
 });
 
 app.get('/api/points/:id', authenticateToken, async (req, res) => {
-    try { const point = await CollectionPoint.findOne({ _id: req.params.id, userId: req.userId }); if (!point) return res.status(404).json({ error: 'Ponto não encontrado' }); res.json(point); }
+    try {
+        const role = req.user?.role?.toUpperCase();
+        // Logística e motorista podem buscar qualquer ponto (para abrir mapa da rota)
+        const filter = (role === 'LOGISTICS' || role === 'DRIVER')
+            ? { _id: req.params.id }
+            : { _id: req.params.id, userId: req.userId };
+        const point = await CollectionPoint.findOne(filter);
+        if (!point) return res.status(404).json({ error: 'Ponto não encontrado' });
+        res.json(point);
+    }
     catch (error) { console.error('❌ Erro ao buscar ponto:', error); res.status(500).json({ error: error.message }); }
 });
 
@@ -784,7 +847,12 @@ app.post('/api/routes', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/routes', authenticateToken, async (req, res) => {
-    try { const routes = await Route.find({ userId: req.userId }).sort({ date: 1 }); res.json(routes); }
+    try {
+        const routes = await Route.find({
+            $or: [{ userId: req.userId }, { assignedTo: req.userId }]
+        }).sort({ date: 1 });
+        res.json(routes);
+    }
     catch (error) { console.error('❌ Erro ao listar rotas:', error); res.status(500).json({ error: 'Erro ao listar rotas' }); }
 });
 
@@ -884,8 +952,8 @@ app.put('/api/routes/:id', authenticateToken, async (req, res) => {
 
         await route.save();
 
-        // Emitir evento via socket
-        io.emit('route-updated', { routeId: route._id, status: route.status });
+        // Emitir evento apenas para o dono da rota (evita broadcast global)
+        emitToUser(route.userId, 'route-updated', { routeId: route._id, status: route.status });
 
         // Buscar a rota atualizada com os pontos populados
         const updatedRoute = await Route.findById(route._id).populate('points.pointId');
@@ -1235,7 +1303,7 @@ app.get('/api/events/external/classification/:name', authenticateToken, async (r
 });
 
 // POST /api/events - Criar evento manualmente (COM NOVOS CAMPOS)
-app.post('/api/events', authenticateToken, async (req, res) => {
+app.post('/api/events', authenticateToken, eventCreationLimiter, async (req, res) => {
     try {
         const {
             name, description, type, address, city, state, zipCode,
@@ -1309,70 +1377,75 @@ app.post('/api/events', authenticateToken, async (req, res) => {
         await event.save();
         console.log(`✅ Evento criado: ${event.name}`);
 
-        // 2. CRIAR PONTO DE COLETA
-        const point = new CollectionPoint({
-            name: `${event.name} - Evento`,
-            address: event.address,
-            city: event.city,
-            state: event.state,
-            zipCode: event.zipCode,
-            capacity: event.estimatedWaste * 2,
-            currentVolume: 0,
-            wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
-            userId: req.userId,
-            status: 'ACTIVE',
-            location: locationObj
-        });
-        await point.save();
-        console.log(`✅ Ponto de coleta criado: ${point.name}`);
+        // IDs criados até aqui — usados para rollback se algo falhar
+        let point = null, collection = null, route = null;
 
-        // 3. REGISTRAR COLETA INICIAL
-        const collection = new Collection({
-            collectionPointId: point._id,
-            wasteVolume: event.estimatedWaste,
-            wasteType: 'outros',
-            notes: `Coleta inicial do evento: ${event.name}`,
-            userId: req.userId,
-            date: new Date()
-        });
-        await collection.save();
-        console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
+        try {
+            // 2. CRIAR PONTO DE COLETA
+            point = new CollectionPoint({
+                name: `${event.name} - Evento`,
+                address: event.address,
+                city: event.city,
+                state: event.state,
+                zipCode: event.zipCode,
+                capacity: event.estimatedWaste * 2,
+                currentVolume: 0,
+                wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
+                userId: req.userId,
+                status: 'ACTIVE',
+                location: locationObj
+            });
+            await point.save();
+            console.log(`✅ Ponto de coleta criado: ${point.name}`);
 
-        // 4. CRIAR ROTA
-        const routeDate = getNextCollectionDate();
+            // 3. REGISTRAR COLETA INICIAL
+            collection = new Collection({
+                collectionPointId: point._id,
+                wasteVolume: event.estimatedWaste,
+                wasteType: 'outros',
+                notes: `Coleta inicial do evento: ${event.name}`,
+                userId: req.userId,
+                date: new Date()
+            });
+            await collection.save();
+            console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
 
-        const route = new Route({
-            name: `${event.name} - Rota de Coleta`,
-            description: `Coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
-            date: routeDate,
-            points: [{
-                pointId: point._id,
-                order: 1,
-                estimatedVolume: event.estimatedWaste,
-                actualVolume: 0,
-                collectedAt: null
-            }],
-            totalDistance: 0,
-            totalWaste: event.estimatedWaste,
-            fuelConsumption: 0,
-            carbonFootprint: event.estimatedWaste * 0.13,
-            status: 'PLANNED',
-            source: 'events',
-            userId: req.userId,
-            eventInfo: {
-                eventId: event._id,
-                eventName: event.name,
-                eventDate: event.startDate,
-                eventLocation: event.address
-            }
-        });
-        await route.save();
-        console.log(`✅ Rota criada: ${route.name}`);
+            // 4. CRIAR ROTA
+            const routeDate = getNextCollectionDate();
+            route = new Route({
+                name: `${event.name} - Rota de Coleta`,
+                description: `Coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
+                date: routeDate,
+                points: [{ pointId: point._id, order: 1, estimatedVolume: event.estimatedWaste, actualVolume: 0, collectedAt: null }],
+                totalDistance: 0,
+                totalWaste: event.estimatedWaste,
+                fuelConsumption: 0,
+                carbonFootprint: event.estimatedWaste * 0.13,
+                status: 'PLANNED',
+                source: 'events',
+                userId: req.userId,
+                eventInfo: { eventId: event._id, eventName: event.name, eventDate: event.startDate, eventLocation: event.address }
+            });
+            await route.save();
+            console.log(`✅ Rota criada: ${route.name}`);
 
-        // 5. ATUALIZAR EVENTO COM ROUTE_ID
-        event.routeId = route._id;
-        event.scheduledCollectionDate = routeDate;
-        await event.save();
+            // 5. ATUALIZAR EVENTO COM ROUTE_ID
+            event.routeId = route._id;
+            event.scheduledCollectionDate = routeDate;
+            await event.save();
+
+        } catch (innerErr) {
+            // Rollback: remover documentos parcialmente criados
+            console.error('❌ Falha ao criar documentos derivados do evento — iniciando rollback:', innerErr.message);
+            const cleanup = [];
+            if (route?._id)      cleanup.push(Route.deleteOne({ _id: route._id }).catch(() => {}));
+            if (collection?._id) cleanup.push(Collection.deleteOne({ _id: collection._id }).catch(() => {}));
+            if (point?._id)      cleanup.push(CollectionPoint.deleteOne({ _id: point._id }).catch(() => {}));
+            if (event?._id)      cleanup.push(Event.deleteOne({ _id: event._id }).catch(() => {}));
+            await Promise.all(cleanup);
+            console.log('🔄 Rollback concluído');
+            return res.status(500).json({ error: 'Erro ao criar evento. Nenhum dado foi salvo. Tente novamente.' });
+        }
 
         res.status(201).json({
             success: true,
@@ -1390,17 +1463,8 @@ app.post('/api/events', authenticateToken, async (req, res) => {
                 scheduleTime: event.scheduleTime,
                 observations: event.observations
             },
-            point: {
-                id: point._id,
-                name: point.name,
-                address: point.address
-            },
-            route: {
-                id: route._id,
-                name: route.name,
-                date: route.date,
-                totalWaste: route.totalWaste
-            }
+            point: { id: point._id, name: point.name, address: point.address },
+            route: { id: route._id, name: route.name, date: route.date, totalWaste: route.totalWaste }
         });
 
     } catch (error) {
@@ -1410,6 +1474,8 @@ app.post('/api/events', authenticateToken, async (req, res) => {
 });
 
 // ========== ROTAS DE EVENTOS ==========
+// NOTA: POST /api/events está declarado acima (linha ~1237) com todos os campos.
+// O segundo POST duplicado foi removido para evitar instabilidade.
 
 // GET /api/events - Listar todos os eventos do usuário
 app.get('/api/events', authenticateToken, async (req, res) => {
@@ -1435,196 +1501,7 @@ app.get('/api/events/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// POST /api/events - Criar evento manualmente (COM PONTO E ROTA)
-app.post('/api/events', authenticateToken, async (req, res) => {
-    try {
-        const {
-            name, description, type, address, city, state, zipCode,
-            startDate, endDate, expectedAttendees, estimatedWaste,
-            latitude, longitude
-        } = req.body;
-
-        console.log('📌 Criando evento manual:', { name, address, city, zipCode });
-
-        // Calcular resíduos estimados se não informado
-        let finalEstimatedWaste = estimatedWaste;
-        if ((!finalEstimatedWaste || finalEstimatedWaste === 0) && expectedAttendees) {
-            finalEstimatedWaste = expectedAttendees * 0.5;
-        }
-
-        // Buscar coordenadas se não foram fornecidas
-        let finalLatitude = latitude;
-        let finalLongitude = longitude;
-        let finalAddress = address;
-        let finalCity = city;
-        let finalState = state;
-
-        // Se não tem coordenadas mas tem CEP, buscar
-        if ((!finalLatitude || !finalLongitude) && zipCode) {
-            const geoResult = await getCoordinatesByZipCode(zipCode);
-            if (geoResult.success && geoResult.latitude && geoResult.longitude) {
-                finalLatitude = geoResult.latitude;
-                finalLongitude = geoResult.longitude;
-                finalAddress = geoResult.address || finalAddress;
-                finalCity = geoResult.city || finalCity;
-                finalState = geoResult.state || finalState;
-                console.log(`📍 Coordenadas via CEP: ${finalLatitude}, ${finalLongitude}`);
-            }
-        }
-
-        // Se ainda não tem coordenadas, tentar pelo endereço
-        if ((!finalLatitude || !finalLongitude) && finalAddress && finalCity) {
-            const searchAddress = `${finalAddress}, ${finalCity}, ${finalState || 'SP'}, Brasil`;
-            try {
-                const nominatimResponse = await axios.get('https://nominatim.openstreetmap.org/search', {
-                    params: { q: searchAddress, format: 'json', limit: 1, countrycodes: 'br' },
-                    headers: { 'User-Agent': 'EcoRoute/1.0' },
-                    timeout: 8000
-                });
-                if (nominatimResponse.data && nominatimResponse.data.length > 0) {
-                    finalLatitude = parseFloat(nominatimResponse.data[0].lat);
-                    finalLongitude = parseFloat(nominatimResponse.data[0].lon);
-                    console.log(`📍 Coordenadas via Nominatim: ${finalLatitude}, ${finalLongitude}`);
-                }
-            } catch (error) {
-                console.log(`⚠️ Erro Nominatim: ${error.message}`);
-            }
-        }
-
-        // Se ainda não tem coordenadas, usar padrão Cotia/SP
-        if (!finalLatitude || !finalLongitude) {
-            finalLatitude = -23.6022;
-            finalLongitude = -46.9194;
-            console.log(`⚠️ Usando coordenadas padrão (Cotia): ${finalLatitude}, ${finalLongitude}`);
-        }
-
-        // ========== CRIAR LOCATION VÁLIDA ==========
-        const locationObj = {
-            type: 'Point',
-            coordinates: [Number(finalLongitude), Number(finalLatitude)]
-        };
-
-        // ========== 1. CRIAR EVENTO ==========
-        const eventData = {
-            name,
-            description: description || '',
-            type: type || 'outro',
-            address: finalAddress || '',
-            city: finalCity || 'Cotia',
-            state: finalState ? finalState.toUpperCase() : 'SP',
-            zipCode: zipCode || '',
-            location: locationObj,
-            latitude: finalLatitude,
-            longitude: finalLongitude,
-            startDate: new Date(startDate),
-            endDate: endDate ? new Date(endDate) : new Date(startDate),
-            expectedAttendees: Number(expectedAttendees) || 0,
-            estimatedWaste: Number(finalEstimatedWaste) || 0,
-            wasteCollected: 0,
-            status: 'agendado',
-            source: 'manual',
-            userId: req.userId
-        };
-
-        const event = new Event(eventData);
-        await event.save();
-        console.log(`✅ Evento criado: ${event.name}`);
-
-        // ========== 2. CRIAR PONTO DE COLETA ==========
-        const point = new CollectionPoint({
-            name: `${event.name} - Evento`,
-            address: event.address,
-            city: event.city,
-            state: event.state,
-            zipCode: event.zipCode,
-            capacity: event.estimatedWaste * 2,
-            currentVolume: 0,
-            wasteTypes: ['plastico', 'papel', 'vidro', 'organico'],
-            userId: req.userId,
-            status: 'ACTIVE',
-            location: locationObj
-        });
-        await point.save();
-        console.log(`✅ Ponto de coleta criado: ${point.name}`);
-
-        // ========== 3. REGISTRAR COLETA INICIAL ==========
-        const collection = new Collection({
-            collectionPointId: point._id,
-            wasteVolume: event.estimatedWaste,
-            wasteType: 'outros',
-            notes: `Coleta inicial do evento: ${event.name}`,
-            userId: req.userId,
-            date: new Date()
-        });
-        await collection.save();
-        console.log(`✅ Coleta registrada: ${event.estimatedWaste} kg`);
-
-        // ========== 4. CRIAR ROTA ==========
-        const routeDate = getNextCollectionDate();
-
-        const route = new Route({
-            name: `${event.name} - Rota de Coleta`,
-            description: `Rota para coleta de resíduos do evento ${event.name}. Resíduos estimados: ${event.estimatedWaste} kg.`,
-            date: routeDate,
-            points: [{
-                pointId: point._id,
-                order: 1,
-                estimatedVolume: event.estimatedWaste,
-                actualVolume: 0,
-                collectedAt: null
-            }],
-            totalDistance: 0,
-            totalWaste: event.estimatedWaste,
-            fuelConsumption: 0,
-            carbonFootprint: event.estimatedWaste * 0.13,
-            status: 'PLANNED',
-            source: 'events',
-            userId: req.userId,
-            eventInfo: {
-                eventId: event._id,
-                eventName: event.name,
-                eventDate: event.startDate,
-                eventLocation: event.address
-            }
-        });
-        await route.save();
-        console.log(`✅ Rota criada: ${route.name}`);
-
-        // ========== 5. ATUALIZAR EVENTO COM ROUTE_ID ==========
-        event.routeId = route._id;
-        event.scheduledCollectionDate = routeDate;
-        await event.save();
-
-        res.status(201).json({
-            success: true,
-            message: `Evento "${event.name}" criado com sucesso! Ponto de coleta e rota criados.`,
-            event: {
-                id: event._id,
-                name: event.name,
-                date: event.startDate,
-                estimatedWaste: event.estimatedWaste,
-                address: event.address,
-                city: event.city,
-                coordinates: { latitude: finalLatitude, longitude: finalLongitude }
-            },
-            point: {
-                id: point._id,
-                name: point.name,
-                address: point.address
-            },
-            route: {
-                id: route._id,
-                name: route.name,
-                date: route.date,
-                totalWaste: route.totalWaste
-            }
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao criar evento:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+// POST /api/events duplicado removido — ver implementação acima (com responsible, contact, scheduleTime, observations)
 
 app.post('/api/events/:id/finish', authenticateToken, async (req, res) => {
     try {
@@ -2350,7 +2227,7 @@ app.get('/api/detect/health', authenticateToken, async (req, res) => {
 
 // ========== ROTAS DE MENSAGENS ==========
 app.post('/api/messages', authenticateToken, async (req, res) => {
-    try { const { content, room, recipient } = req.body; const message = new Message({ content, room: room || 'geral', sender: req.userId, senderName: req.user.name, recipient }); await message.save(); io.emit('new-message', { ...message.toJSON(), timestamp: new Date() }); res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message }); }
+    try { const { content, room, recipient } = req.body; const msgRoom = room || 'geral'; const message = new Message({ content, room: msgRoom, sender: req.userId, senderName: req.user.name, recipient }); await message.save(); io.to(msgRoom).emit('new-message', { ...message.toJSON(), timestamp: new Date() }); res.status(201).json({ message: 'Mensagem enviada com sucesso', data: message }); }
     catch (error) { res.status(500).json({ error: 'Erro ao enviar mensagem' }); }
 });
 
@@ -2378,6 +2255,374 @@ app.patch('/api/notifications/read-all', authenticateToken, async (req, res) => 
 app.delete('/api/notifications/:id', authenticateToken, async (req, res) => {
     try { await Notification.findOneAndDelete({ _id: req.params.id, user: req.userId }); res.json({ message: 'Notificação removida' }); }
     catch (error) { res.status(500).json({ error: 'Erro ao remover notificação' }); }
+});
+
+// ========== ROTAS DE ADMIN / SUPORTE ==========
+
+// Middleware: apenas ADMIN ou SUPPORT acessam essas rotas
+const requireAdminOrSupport = (req, res, next) => {
+    const role = req.user?.role?.toUpperCase();
+    if (role !== 'ADMIN' && role !== 'SUPPORT') {
+        return res.status(403).json({ error: 'Acesso restrito a administradores e suporte' });
+    }
+    next();
+};
+
+// GET /api/admin/users — listar todos os usuários
+app.get('/api/admin/users', authenticateToken, requireAdminOrSupport, async (req, res) => {
+    try {
+        const { search, role, status } = req.query;
+        const filter = {};
+        if (search) filter.$or = [
+            { name: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } }
+        ];
+        if (role) filter.role = role.toUpperCase();
+        if (status === 'active')   filter.active = true;
+        if (status === 'inactive') filter.active = false;
+
+        const users = await User.find(filter)
+            .select('-password')
+            .sort({ createdAt: -1 })
+            .limit(200);
+
+        // Enriquecer com contagem de documentos de cada usuário
+        const userIds = users.map(u => u._id);
+        const [routeCounts, eventCounts, pointCounts] = await Promise.all([
+            Route.aggregate([{ $match: { userId: { $in: userIds } } }, { $group: { _id: '$userId', count: { $sum: 1 } } }]),
+            Event.aggregate([{ $match: { userId: { $in: userIds } } }, { $group: { _id: '$userId', count: { $sum: 1 } } }]),
+            CollectionPoint.aggregate([{ $match: { userId: { $in: userIds } } }, { $group: { _id: '$userId', count: { $sum: 1 } } }])
+        ]);
+
+        const routeMap   = Object.fromEntries(routeCounts.map(r => [r._id.toString(), r.count]));
+        const eventMap   = Object.fromEntries(eventCounts.map(r => [r._id.toString(), r.count]));
+        const pointMap   = Object.fromEntries(pointCounts.map(r => [r._id.toString(), r.count]));
+
+        const enriched = users.map(u => ({
+            ...u.toObject(),
+            stats: {
+                routes: routeMap[u._id.toString()] || 0,
+                events: eventMap[u._id.toString()] || 0,
+                points: pointMap[u._id.toString()] || 0
+            }
+        }));
+
+        res.json({ users: enriched, total: enriched.length });
+    } catch (error) {
+        console.error('❌ Erro ao listar usuários:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// PATCH /api/admin/users/:id/role — alterar role do usuário
+app.patch('/api/admin/users/:id/role', authenticateToken, requireAdminOrSupport, async (req, res) => {
+    try {
+        const { role } = req.body;
+        const validRoles = ['COOPERATIVE', 'COMPANY', 'LOGISTICS', 'SUPPORT', 'ADMIN', 'DRIVER'];
+        if (!validRoles.includes(role?.toUpperCase())) {
+            return res.status(400).json({ error: 'Role inválido' });
+        }
+        // Suporte não pode promover para ADMIN
+        if (req.user?.role === 'SUPPORT' && role.toUpperCase() === 'ADMIN') {
+            return res.status(403).json({ error: 'Suporte não pode promover para ADMIN' });
+        }
+        const user = await User.findByIdAndUpdate(
+            req.params.id,
+            { role: role.toUpperCase() },
+            { new: true, select: '-password' }
+        );
+        if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+        res.json({ user, message: `Role alterado para ${role.toUpperCase()}` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// PATCH /api/admin/users/:id/status — ativar/desativar usuário
+app.patch('/api/admin/users/:id/status', authenticateToken, requireAdminOrSupport, async (req, res) => {
+    try {
+        const { active } = req.body;
+        const user = await User.findByIdAndUpdate(
+            req.params.id,
+            { active: Boolean(active) },
+            { new: true, select: '-password' }
+        );
+        if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+        res.json({ user, message: active ? 'Usuário ativado' : 'Usuário desativado' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/admin/stats — estatísticas gerais do sistema para o suporte
+app.get('/api/admin/stats', authenticateToken, requireAdminOrSupport, async (req, res) => {
+    try {
+        const [
+            totalUsers, activeUsers, totalRoutes, activeRoutes,
+            totalEvents, pendingEvents, totalPoints, totalCollections
+        ] = await Promise.all([
+            User.countDocuments(),
+            User.countDocuments({ active: true }),
+            Route.countDocuments(),
+            Route.countDocuments({ status: { $in: ['PLANNED', 'IN_PROGRESS'] } }),
+            Event.countDocuments(),
+            Event.countDocuments({ status: 'agendado' }),
+            CollectionPoint.countDocuments(),
+            Collection.countDocuments()
+        ]);
+
+        // Usuários por role
+        const usersByRole = await User.aggregate([
+            { $group: { _id: '$role', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+        ]);
+
+        // Rotas criadas nos últimos 7 dias
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const recentRoutes = await Route.countDocuments({ createdAt: { $gte: weekAgo } });
+
+        res.json({
+            users: { total: totalUsers, active: activeUsers, byRole: usersByRole },
+            routes: { total: totalRoutes, active: activeRoutes, recentWeek: recentRoutes },
+            events: { total: totalEvents, pending: pendingEvents },
+            points: { total: totalPoints },
+            collections: { total: totalCollections }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========== ROTAS DA COOPERATIVA ==========
+
+// Middleware: apenas COOPERATIVE ou ADMIN
+const requireCooperative = (req, res, next) => {
+    const role = req.user?.role?.toUpperCase();
+    if (role !== 'COOPERATIVE' && role !== 'ADMIN') {
+        return res.status(403).json({ error: 'Acesso restrito a cooperativas' });
+    }
+    next();
+};
+
+// Haversine distance (km)
+const haversineKm = (lat1, lon1, lat2, lon2) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+};
+
+// GET /api/cooperative/stats — estatísticas para home da cooperativa
+app.get('/api/cooperative/stats', authenticateToken, requireCooperative, async (req, res) => {
+    try {
+        const [
+            totalCompanies, totalLogistics, totalRequests, pendingRequests,
+            totalRoutes, assignedRoutes
+        ] = await Promise.all([
+            User.countDocuments({ role: 'COMPANY', active: true }),
+            User.countDocuments({ role: { $in: ['LOGISTICS', 'DRIVER'] }, active: true }),
+            CollectionRequest.countDocuments(),
+            CollectionRequest.countDocuments({ status: 'pending' }),
+            Route.countDocuments({ userId: req.userId }),
+            Route.countDocuments({ assignedTo: { $ne: null } })
+        ]);
+
+        const recentRequests = await CollectionRequest.find({ status: { $in: ['pending', 'confirmed'] } })
+            .sort({ createdAt: -1 }).limit(5).lean();
+
+        res.json({ totalCompanies, totalLogistics, totalRequests, pendingRequests, totalRoutes, assignedRoutes, recentRequests });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/cooperative/logistics-users — lista usuários de logística
+app.get('/api/cooperative/logistics-users', authenticateToken, requireCooperative, async (req, res) => {
+    try {
+        const users = await User.find({ role: { $in: ['LOGISTICS', 'DRIVER'] }, active: true })
+            .select('-password').sort({ name: 1 });
+        // enriquecer com rotas atribuídas
+        const enriched = await Promise.all(users.map(async u => {
+            const assignedCount = await Route.countDocuments({ assignedTo: u._id });
+            return { ...u.toObject(), assignedRoutes: assignedCount };
+        }));
+        res.json({ users: enriched });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/cooperative/routes-with-distance — rotas com distância calculada a partir da cooperativa
+app.get('/api/cooperative/routes-with-distance', authenticateToken, requireCooperative, async (req, res) => {
+    try {
+        const cooperativeUser = await User.findById(req.userId).select('latitude longitude address city');
+        const routes = await Route.find({ userId: req.userId }).sort({ date: 1 }).lean();
+
+        const enriched = routes.map(r => {
+            let distanceKm = null;
+            const coopLat = cooperativeUser?.latitude;
+            const coopLng = cooperativeUser?.longitude;
+            // tomar coordenadas do primeiro ponto da rota se não houver cooperativeLat
+            const rLat = r.cooperativeLat || (r.points?.[0]?.latitude);
+            const rLng = r.cooperativeLng || (r.points?.[0]?.longitude);
+            if (coopLat && coopLng && rLat && rLng) {
+                distanceKm = Math.round(haversineKm(coopLat, coopLng, rLat, rLng) * 10) / 10;
+            }
+            return { ...r, distanceKm };
+        });
+
+        res.json({ routes: enriched, cooperativeAddress: cooperativeUser?.address });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/routes/:id/assign — cooperativa atribui rota para logística
+app.post('/api/routes/:id/assign', authenticateToken, requireCooperative, async (req, res) => {
+    try {
+        const { logisticsUserId } = req.body;
+        if (!logisticsUserId) return res.status(400).json({ error: 'logisticsUserId é obrigatório' });
+
+        const [route, logisticsUser, cooperativeUser] = await Promise.all([
+            Route.findById(req.params.id),
+            User.findById(logisticsUserId).select('-password'),
+            User.findById(req.userId).select('name latitude longitude address city')
+        ]);
+
+        if (!route) return res.status(404).json({ error: 'Rota não encontrada' });
+        if (!logisticsUser) return res.status(404).json({ error: 'Usuário de logística não encontrado' });
+        if (!['LOGISTICS', 'DRIVER'].includes(logisticsUser.role?.toUpperCase())) {
+            return res.status(400).json({ error: 'Usuário não é de logística' });
+        }
+
+        route.assignedTo        = logisticsUser._id;
+        route.assignedAt        = new Date();
+        route.assignedByName    = cooperativeUser.name;
+        route.cooperativeLat    = cooperativeUser.latitude;
+        route.cooperativeLng    = cooperativeUser.longitude;
+        route.cooperativeAddress = cooperativeUser.address
+            ? `${cooperativeUser.address}, ${cooperativeUser.city || ''}`.trim()
+            : '';
+        await route.save();
+
+        // Notificar logística
+        emitToUser(logisticsUserId, 'route-assigned', {
+            routeId: route._id,
+            routeName: route.name,
+            assignedBy: cooperativeUser.name,
+            cooperativeAddress: route.cooperativeAddress
+        });
+
+        res.json({ route, message: `Rota atribuída a ${logisticsUser.name}` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// DELETE /api/routes/:id/assign — cooperativa remove atribuição
+app.delete('/api/routes/:id/assign', authenticateToken, requireCooperative, async (req, res) => {
+    try {
+        const route = await Route.findById(req.params.id);
+        if (!route) return res.status(404).json({ error: 'Rota não encontrada' });
+
+        const prevAssigned = route.assignedTo;
+        route.assignedTo         = null;
+        route.assignedAt         = null;
+        route.assignedByName     = '';
+        route.cooperativeLat     = null;
+        route.cooperativeLng     = null;
+        route.cooperativeAddress = '';
+        await route.save();
+
+        if (prevAssigned) {
+            emitToUser(prevAssigned.toString(), 'route-unassigned', { routeId: route._id });
+        }
+
+        res.json({ message: 'Atribuição removida com sucesso' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/collection-requests — empresa vê os próprios, cooperativa vê todos
+app.get('/api/collection-requests', authenticateToken, async (req, res) => {
+    try {
+        const role = req.user?.role?.toUpperCase();
+        const filter = role === 'COMPANY' ? { companyId: req.userId } : {};
+        const requests = await CollectionRequest.find(filter).sort({ createdAt: -1 });
+        res.json({ requests });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/collection-requests — empresa cria solicitação
+app.post('/api/collection-requests', authenticateToken, async (req, res) => {
+    try {
+        const role = req.user?.role?.toUpperCase();
+        if (role !== 'COMPANY' && role !== 'ADMIN') {
+            return res.status(403).json({ error: 'Apenas empresas podem criar solicitações' });
+        }
+        const { address, city, state, zipCode, wasteTypes, estimatedVolume, scheduledDate, observations } = req.body;
+        if (!address || !scheduledDate) {
+            return res.status(400).json({ error: 'address e scheduledDate são obrigatórios' });
+        }
+
+        const request = new CollectionRequest({
+            companyId:       req.userId,
+            companyName:     req.user.name,
+            address, city, state, zipCode,
+            wasteTypes:      wasteTypes || [],
+            estimatedVolume: estimatedVolume || '',
+            scheduledDate:   new Date(scheduledDate),
+            observations:    observations || '',
+            status:          'pending'
+        });
+        await request.save();
+
+        // Notificar cooperativas online
+        const cooperativeUsers = await User.find({ role: 'COOPERATIVE', active: true }).select('_id');
+        for (const cu of cooperativeUsers) {
+            emitToUser(cu._id.toString(), 'new-collection-request', {
+                requestId: request._id,
+                companyName: req.user.name,
+                address,
+                scheduledDate
+            });
+        }
+
+        res.status(201).json({ request, message: 'Solicitação criada com sucesso' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// PUT /api/collection-requests/:id — atualizar status (cooperativa)
+app.put('/api/collection-requests/:id', authenticateToken, requireCooperative, async (req, res) => {
+    try {
+        const { status, routeId } = req.body;
+        const validStatuses = ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'];
+        if (status && !validStatuses.includes(status)) {
+            return res.status(400).json({ error: 'Status inválido' });
+        }
+        const update = {};
+        if (status)  update.status  = status;
+        if (routeId) update.routeId = routeId;
+
+        const request = await CollectionRequest.findByIdAndUpdate(req.params.id, update, { new: true });
+        if (!request) return res.status(404).json({ error: 'Solicitação não encontrada' });
+
+        // Notificar empresa
+        emitToUser(request.companyId.toString(), 'collection-request-updated', {
+            requestId: request._id,
+            status: request.status
+        });
+
+        res.json({ request, message: 'Solicitação atualizada' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ========== ROTAS PÚBLICAS ==========

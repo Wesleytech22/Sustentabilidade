@@ -50,6 +50,8 @@ const eventSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 eventSchema.index({ location: '2dsphere' });
+eventSchema.index({ userId: 1 });                      // acelera GET /api/events por usuário
+eventSchema.index({ userId: 1, startDate: -1 });       // acelera listagem ordenada por data
 eventSchema.methods.setCoordinates = function (latitude, longitude) {
     if (latitude && longitude) {
         this.location = {

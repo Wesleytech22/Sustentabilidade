@@ -9,8 +9,9 @@ const Message = require('../models/Message');
 const botService = require('./botService');
 
 let io;
-const onlineUsers = new Map(); // userId -> socketId
-const userSockets = new Map(); // socketId -> userId
+const onlineUsers = new Map();     // userId -> socketId
+const userSockets = new Map();     // socketId -> userId
+const onlineUsersData = new Map(); // userId -> { userId, name, email, role }  (cache em memória)
 const pendingSupportRequests = new Map(); // requestId -> request data
 const activeSupportChats = new Map(); // room -> { supportId, userId }
 const supportChatsBySupport = new Map(); // supportId -> [rooms] // 👈 NOVO: mapa de chats por suporte
@@ -64,12 +65,20 @@ io.on('connection', (socket) => {
 
   console.log(`🔌 Socket conectado: ${socket.id} - ${user.name} (${user.role})`);
 
-  onlineUsers.set(user._id.toString(), socket.id);
-  userSockets.set(socket.id, user._id.toString());
+  const uid = user._id.toString();
+  onlineUsers.set(uid, socket.id);
+  userSockets.set(socket.id, uid);
+  // Cachear dados do usuário em memória para evitar queries no broadcastOnlineUsers
+  onlineUsersData.set(uid, {
+    userId: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role
+  });
 
   // Inicializar lista de chats do suporte
-  if (!supportChatsBySupport.has(user._id.toString())) {
-    supportChatsBySupport.set(user._id.toString(), []);
+  if (!supportChatsBySupport.has(uid)) {
+    supportChatsBySupport.set(uid, []);
   }
 
   broadcastOnlineUsers();
@@ -616,6 +625,7 @@ io.on('connection', (socket) => {
     if (userId) {
       onlineUsers.delete(userId);
       userSockets.delete(socket.id);
+      onlineUsersData.delete(userId); // limpa cache em memória
 
       // Encerrar sessão do bot se houver uma ativa
       if (botService.getSession(userId)) {
@@ -666,28 +676,33 @@ io.on('connection', (socket) => {
 return io;
 };
 
-const broadcastOnlineUsers = async () => {
+// Sincronizada — zero queries ao MongoDB (usa cache em memória)
+const broadcastOnlineUsers = () => {
   const users = [];
-
   for (const [userId] of onlineUsers) {
-    const user = await User.findById(userId).select('name email role');
-    if (user) {
-      users.push({
-        userId: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      });
-    }
+    const data = onlineUsersData.get(userId);
+    if (data) users.push(data);
   }
-
   io.emit('online-users', users);
   console.log(`📊 Usuários online: ${users.length}`);
+};
+
+// Helper: emite evento apenas para o socket de um usuário específico
+const emitToUser = (userId, event, data) => {
+  if (!userId || !io) return false;
+  const socketId = onlineUsers.get(userId.toString());
+  if (socketId) {
+    io.to(socketId).emit(event, data);
+    return true;
+  }
+  return false;
 };
 
 module.exports = {
   initSocket,
   onlineUsers,
   userSockets,
-  supportChatsBySupport // Exportar para uso em outros lugares
+  onlineUsersData,
+  emitToUser,
+  supportChatsBySupport
 };
